@@ -38,6 +38,14 @@ const emitOverlappingXAiPromptCompleteOutOfOrder =
 const failPrompt = process.env.T3_ACP_FAIL_PROMPT === "1";
 const failSetConfigOption = process.env.T3_ACP_FAIL_SET_CONFIG_OPTION === "1";
 const exitOnSetConfigOption = process.env.T3_ACP_EXIT_ON_SET_CONFIG_OPTION === "1";
+// Mimics the real `kimi acp` handshake: `session/new` returns only
+// `configOptions` (no `models` field) and a trailing
+// `available_commands_update` notification arrives right after the response.
+const kimiHandshake = process.env.T3_ACP_KIMI_HANDSHAKE === "1";
+// Mimics `kimi acp` after startup: SIGTERM is handled but does not exit.
+const ignoreSigterm = process.env.T3_ACP_IGNORE_SIGTERM === "1";
+// Mimics `kimi acp` transport teardown: the agent exits once stdin closes.
+const exitOnStdinClose = process.env.T3_ACP_EXIT_ON_STDIN_CLOSE === "1";
 const promptResponseText = process.env.T3_ACP_PROMPT_RESPONSE_TEXT;
 const promptDelayMs = Number(process.env.T3_ACP_PROMPT_DELAY_MS ?? "0");
 const permissionOptionIds = {
@@ -81,8 +89,24 @@ function writeJsonRpcNotification(method: string, params: unknown): void {
 
 process.once("SIGTERM", () => {
   logExit("SIGTERM");
-  process.exit(0);
+  if (!ignoreSigterm) {
+    process.exit(0);
+  }
 });
+
+if (ignoreSigterm && !exitOnStdinClose) {
+  // Keep the event loop alive even after stdin closes so teardown must
+  // escalate past SIGTERM.
+  // @effect-diagnostics-next-line globalTimers:off - Raw keep-alive timer; runs outside the Effect runtime.
+  setInterval(() => {}, 60_000);
+}
+
+if (exitOnStdinClose) {
+  process.stdin.on("close", () => {
+    logExit("stdin-close");
+    process.exit(0);
+  });
+}
 
 process.once("SIGINT", () => {
   logExit("SIGINT");
@@ -310,11 +334,55 @@ const program = Effect.gen(function* () {
   yield* agent.handleAuthenticate(() => Effect.succeed({}));
 
   yield* agent.handleCreateSession(() =>
-    Effect.succeed({
-      sessionId,
-      modes: modeState(),
-      models: modelState(),
-      configOptions: configOptions(),
+    Effect.gen(function* () {
+      if (kimiHandshake) {
+        // Real `kimi acp` sends the `available_commands_update` notification a
+        // few milliseconds after the `session/new` response.
+        yield* Effect.sleep("5 millis").pipe(
+          Effect.andThen(
+            Effect.sync(() => {
+              writeJsonRpcNotification("session/update", {
+                sessionId,
+                update: {
+                  sessionUpdate: "available_commands_update",
+                  availableCommands: [
+                    {
+                      name: "help",
+                      description: "Show available Kimi Code commands",
+                    },
+                  ],
+                },
+              });
+            }),
+          ),
+          Effect.forkDetach,
+        );
+        return {
+          sessionId,
+          modes: modeState(),
+          configOptions: [
+            {
+              id: "model",
+              name: "Model",
+              category: "model",
+              type: "select" as const,
+              currentValue: "kimi-code/k3",
+              options: [
+                { value: "kimi-code/k3", name: "K3" },
+                { value: "kimi-code/k3-256k", name: "K3 (256k)" },
+                { value: "kimi-code/kimi-for-coding", name: "K2.7 Coding" },
+                { value: "kimi-code/kimi-for-coding-highspeed", name: "K2.7 Coding Highspeed" },
+              ],
+            },
+          ] satisfies ReadonlyArray<AcpSchema.SessionConfigOption>,
+        };
+      }
+      return {
+        sessionId,
+        modes: modeState(),
+        models: modelState(),
+        configOptions: configOptions(),
+      };
     }),
   );
 
@@ -924,7 +992,12 @@ const program = Effect.gen(function* () {
     return Effect.succeed({});
   });
 
-  return yield* Effect.never;
+  return ignoreSigterm && !exitOnStdinClose
+    ? // An uninterruptible main fiber keeps the process alive through
+      // NodeRuntime's SIGTERM interruption, mimicking agents that survive
+      // SIGTERM after startup.
+      yield* Effect.uninterruptible(Effect.never)
+    : yield* Effect.never;
 }).pipe(
   Effect.provide(
     EffectAcpAgent.layerStdio(

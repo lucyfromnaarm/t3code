@@ -339,6 +339,7 @@ describe("resolveDefaultProviderModelSelection", () => {
     ["codex", "codex", "gpt-5.6"],
     ["claudeAgent", "claudeAgent", "claude-fable-5"],
     ["cursor", "cursor", "composer-2"],
+    ["kimi", "kimi", "kimi-code/k3"],
   ])("uses the only available %s instance", (driver, instanceId, modelSlug) => {
     const providers = [
       provider({

@@ -49,4 +49,23 @@ describe("mobile model options", () => {
     expect(option?.capabilities?.optionDescriptors?.[0]?.id).toBe("serviceTier");
     expect(option?.selection.options).toEqual([{ id: "serviceTier", value: "default" }]);
   });
+
+  it("labels kimi driver providers as Kimi when no display name is set", () => {
+    const config = {
+      providers: [
+        {
+          instanceId: "kimi",
+          driver: "kimi",
+          enabled: true,
+          installed: true,
+          auth: { status: "authenticated" },
+          models: [{ slug: "kimi-code/k3", name: "K3", isCustom: false }],
+        },
+      ],
+    } as unknown as ServerConfig;
+
+    const [option] = buildModelOptions(config, null);
+
+    expect(option?.providerLabel).toBe("Kimi");
+  });
 });

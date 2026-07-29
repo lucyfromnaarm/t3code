@@ -49,6 +49,13 @@ export type AcpSessionRuntimeEvent = AcpParsedSessionEvent | AcpSessionEventStre
 
 const defaultSessionLoadTimeout = Duration.seconds(90);
 const defaultSessionLoadReplayIdleGap = Duration.seconds(2);
+/**
+ * Grace period between SIGTERM and SIGKILL when tearing down the agent child
+ * process. Some ACP agents (e.g. `kimi acp`) keep running after SIGTERM once
+ * fully started; without escalation the scope-close finalizer would wait on
+ * the child exit forever.
+ */
+const childProcessForceKillAfter = Duration.seconds(2);
 
 export interface AcpSpawnInput {
   readonly command: string;
@@ -340,6 +347,7 @@ export const make = (
           ...(options.spawn.cwd ? { cwd: options.spawn.cwd } : {}),
           ...(options.spawn.env ? { env: options.spawn.env, extendEnv: true } : {}),
           shell: spawnCommand.shell,
+          forceKillAfter: childProcessForceKillAfter,
         }),
       )
       .pipe(

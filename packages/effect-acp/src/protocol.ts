@@ -1,6 +1,7 @@
 import * as Cause from "effect/Cause";
 import * as Effect from "effect/Effect";
 import * as Deferred from "effect/Deferred";
+import * as Fiber from "effect/Fiber";
 import * as Queue from "effect/Queue";
 import * as Ref from "effect/Ref";
 import * as Schema from "effect/Schema";
@@ -475,7 +476,21 @@ export const makeAcpPatchedProtocol = Effect.fn("makeAcpPatchedProtocol")(functi
     Effect.forkScoped,
   );
 
-  yield* Stream.fromQueue(outgoing).pipe(Stream.run(options.stdio.stdout()), Effect.forkScoped);
+  const writeFiber = yield* Stream.fromQueue(outgoing).pipe(
+    Stream.run(options.stdio.stdout()),
+    Effect.forkScoped,
+  );
+  // On scope close, end the outgoing queue before the writer fiber is
+  // interrupted so it drains and closes the transport's stdin. Agents that
+  // exit on stdin EOF (e.g. `kimi acp`) then shut down on their own instead
+  // of waiting out the child-process SIGTERM/SIGKILL escalation.
+  yield* Scope.addFinalizer(
+    yield* Scope.Scope,
+    Effect.andThen(
+      Queue.end(outgoing),
+      Fiber.await(writeFiber).pipe(Effect.timeoutOption("2 seconds"), Effect.ignore),
+    ),
+  );
 
   const clientProtocol = RpcClient.Protocol.of({
     run: (_clientId, f) =>
