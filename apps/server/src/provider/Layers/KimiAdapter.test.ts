@@ -188,6 +188,64 @@ it.layer(kimiAdapterTestLayer)("KimiAdapterLive", (it) => {
     }),
   );
 
+  it.effect("does not switch the session model when a turn fails empty-input validation", () =>
+    Effect.gen(function* () {
+      const threadId = ThreadId.make("kimi-empty-turn-model-switch");
+      const tempDir = yield* Effect.promise(() =>
+        NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "kimi-adapter-request-log-")),
+      );
+      const requestLogPath = NodePath.join(tempDir, "requests.log");
+      const wrapperPath = yield* Effect.promise(() =>
+        makeMockKimiWrapper({ T3_ACP_REQUEST_LOG_PATH: requestLogPath }),
+      );
+      const adapter = yield* makeTestAdapter(wrapperPath);
+
+      const turnCompleted = yield* Deferred.make<void>();
+      const eventsFiber = yield* Stream.runForEach(adapter.streamEvents, (event) =>
+        event.type === "turn.completed" ? Deferred.succeed(turnCompleted, undefined) : Effect.void,
+      ).pipe(Effect.forkChild);
+
+      yield* adapter.startSession({
+        threadId,
+        provider: ProviderDriverKind.make("kimi"),
+        cwd: process.cwd(),
+        runtimeMode: "full-access",
+        modelSelection: { instanceId: ProviderInstanceId.make("kimi"), model: "grok-mock-alt" },
+      });
+
+      // An empty turn must fail validation without touching the live session
+      // model: a model switch here would leave the ACP session on the new
+      // model while the adapter still tracks the old one.
+      const validationError = yield* Effect.flip(
+        adapter.sendTurn({
+          threadId,
+          input: "   ",
+          attachments: [],
+          modelSelection: { instanceId: ProviderInstanceId.make("kimi"), model: "default" },
+        }),
+      );
+      assert.equal(validationError._tag, "ProviderAdapterValidationError");
+
+      // A follow-up valid turn with the original model must run normally.
+      yield* adapter.sendTurn({
+        threadId,
+        input: "hello again",
+        attachments: [],
+        modelSelection: { instanceId: ProviderInstanceId.make("kimi"), model: "grok-mock-alt" },
+      });
+      yield* Deferred.await(turnCompleted);
+      yield* Fiber.interrupt(eventsFiber);
+
+      const modelSwitches = (yield* Effect.promise(() => readJsonLines(requestLogPath))).filter(
+        (record) => record.method === "session/set_model",
+      );
+      // Only the initial session setup may switch the model.
+      assert.lengthOf(modelSwitches, 1);
+
+      yield* adapter.stopSession(threadId);
+    }),
+  );
+
   it.effect("closes the ACP child process when a session stops", () =>
     Effect.gen(function* () {
       const threadId = ThreadId.make("kimi-stop-session-close");

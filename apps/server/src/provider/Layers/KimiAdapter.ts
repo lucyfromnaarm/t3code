@@ -871,21 +871,6 @@ export function makeKimiAdapter(kimiSettings: KimiSettings, options?: KimiAdapte
             };
 
             return yield* Effect.gen(function* () {
-              const turnModelSelection =
-                input.modelSelection?.instanceId === boundInstanceId
-                  ? input.modelSelection
-                  : undefined;
-              const requestedTurnModelId = turnModelSelection?.model
-                ? resolveKimiAcpBaseModelId(turnModelSelection.model)
-                : undefined;
-              const currentModelId = yield* applyKimiAcpModelSelection({
-                runtime: ctx.acp,
-                currentModelId: ctx.currentModelId,
-                requestedModelId: requestedTurnModelId,
-                mapError: (cause) =>
-                  mapAcpToAdapterError(PROVIDER, input.threadId, "session/set_model", cause),
-              });
-
               const text = input.input?.trim();
               const imagePromptParts = yield* Effect.forEach(
                 input.attachments ?? [],
@@ -932,6 +917,25 @@ export function makeKimiAdapter(kimiSettings: KimiSettings, options?: KimiAdapte
                   issue: "Turn requires non-empty text or attachments.",
                 });
               }
+
+              // Apply the model switch only after every validation that can
+              // fail: the switch mutates the live ACP session, so doing it
+              // earlier would leave the session on the new model while
+              // ctx.currentModelId still reports the old one.
+              const turnModelSelection =
+                input.modelSelection?.instanceId === boundInstanceId
+                  ? input.modelSelection
+                  : undefined;
+              const requestedTurnModelId = turnModelSelection?.model
+                ? resolveKimiAcpBaseModelId(turnModelSelection.model)
+                : undefined;
+              const currentModelId = yield* applyKimiAcpModelSelection({
+                runtime: ctx.acp,
+                currentModelId: ctx.currentModelId,
+                requestedModelId: requestedTurnModelId,
+                mapError: (cause) =>
+                  mapAcpToAdapterError(PROVIDER, input.threadId, "session/set_model", cause),
+              });
 
               ctx.currentModelId = currentModelId;
               const displayModel = currentModelId

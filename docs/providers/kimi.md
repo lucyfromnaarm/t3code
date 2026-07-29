@@ -12,7 +12,7 @@ Install the Kimi Code CLI and log in:
 kimi login
 ```
 
-Login uses a device-code flow against your Kimi account. Auth state lives under `~/.kimi-code/`.
+Login uses a device-code flow against your Kimi account. Auth state lives under `~/.kimi-code/`. On older CLI versions without the `login` subcommand, start `kimi` and run `/login` in its interactive UI instead.
 
 In T3 Code Settings, your Kimi provider can stay like this:
 
