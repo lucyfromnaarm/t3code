@@ -32,6 +32,7 @@ import {
   kimiPromptSettlementBelongsToContext,
   makeKimiAdapter,
   markKimiTurnInterrupted,
+  settleKimiInterruptedTurn,
 } from "./KimiAdapter.ts";
 const decodeKimiSettings = Schema.decodeSync(KimiSettings);
 
@@ -128,14 +129,29 @@ it("requires a settlement to match the live Kimi turn", () => {
   );
 });
 
-it("bounds interrupted turn tracking to the most recent ids", () => {
-  const interruptedTurnIds = new Set<TurnId>();
+it("retains outstanding interrupted turns beyond the bound", () => {
+  const interruptedTurnIds = new Map<TurnId, "outstanding" | "settled">();
   for (let index = 0; index < KIMI_MAX_INTERRUPTED_TURN_IDS + 10; index += 1) {
     markKimiTurnInterrupted(interruptedTurnIds, TurnId.make(`turn-${index}`));
   }
+  // Outstanding ids are never evicted: dropping one could let a late
+  // settlement emit a duplicate terminal event.
+  assert.equal(interruptedTurnIds.size, KIMI_MAX_INTERRUPTED_TURN_IDS + 10);
+  assert.isTrue(interruptedTurnIds.has(TurnId.make("turn-0")));
+});
+
+it("evicts settled interrupted turns before outstanding ones", () => {
+  const interruptedTurnIds = new Map<TurnId, "outstanding" | "settled">();
+  for (let index = 0; index < KIMI_MAX_INTERRUPTED_TURN_IDS; index += 1) {
+    markKimiTurnInterrupted(interruptedTurnIds, TurnId.make(`turn-${index}`));
+  }
+  settleKimiInterruptedTurn(interruptedTurnIds, TurnId.make("turn-0"));
+  settleKimiInterruptedTurn(interruptedTurnIds, TurnId.make("turn-1"));
+  markKimiTurnInterrupted(interruptedTurnIds, TurnId.make("turn-new"));
   assert.equal(interruptedTurnIds.size, KIMI_MAX_INTERRUPTED_TURN_IDS);
   assert.isFalse(interruptedTurnIds.has(TurnId.make("turn-0")));
-  assert.isTrue(interruptedTurnIds.has(TurnId.make(`turn-${KIMI_MAX_INTERRUPTED_TURN_IDS + 9}`)));
+  assert.isTrue(interruptedTurnIds.has(TurnId.make("turn-1")));
+  assert.equal(interruptedTurnIds.get(TurnId.make("turn-new")), "outstanding");
 });
 
 it.layer(kimiAdapterTestLayer)("KimiAdapterLive", (it) => {
@@ -317,6 +333,42 @@ it.layer(kimiAdapterTestLayer)("KimiAdapterLive", (it) => {
       const lateEvent = runtimeEvents[lateDeltaIndex];
       assert.equal(lateEvent?.turnId, turnStarted?.turnId);
 
+      yield* adapter.stopSession(threadId);
+    }),
+  );
+
+  it.effect("keeps consuming ACP events after the startSession caller fiber ends", () =>
+    Effect.gen(function* () {
+      const threadId = ThreadId.make("kimi-drain-outlives-startsession");
+      const wrapperPath = yield* Effect.promise(() => makeMockKimiWrapper());
+      const adapter = yield* makeTestAdapter(wrapperPath);
+
+      const contentDelta = yield* Deferred.make<void>();
+      const eventsFiber = yield* Stream.runForEach(adapter.streamEvents, (event) =>
+        event.type === "content.delta" ? Deferred.succeed(contentDelta, undefined) : Effect.void,
+      ).pipe(Effect.forkChild);
+
+      // Run startSession in a short-lived fiber that ends as soon as it
+      // returns; the notification drain must be tied to the session scope,
+      // not to the caller's fiber.
+      yield* adapter
+        .startSession({
+          threadId,
+          provider: ProviderDriverKind.make("kimi"),
+          cwd: process.cwd(),
+          runtimeMode: "full-access",
+        })
+        .pipe(Effect.forkChild, Effect.flatMap(Fiber.join));
+
+      yield* adapter.sendTurn({ threadId, input: "hello kimi", attachments: [] });
+      const deltaResult = yield* Deferred.await(contentDelta).pipe(
+        Effect.timeoutOption("5 seconds"),
+      );
+      assert.isTrue(
+        Option.isSome(deltaResult),
+        "Notification drain stopped after the startSession caller fiber ended.",
+      );
+      yield* Fiber.interrupt(eventsFiber);
       yield* adapter.stopSession(threadId);
     }),
   );

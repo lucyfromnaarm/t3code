@@ -107,8 +107,14 @@ interface KimiSessionContext {
    * prompt RPC resolves (e.g. kimi after end_turn) are attributed to it
    * instead of being silently dropped. */
   lastActiveTurnId: TurnId | undefined;
-  /** Turns already interrupted; late prompt RPCs must not resurrect them. */
-  interruptedTurnIds: Set<TurnId>;
+  /**
+   * Turns already interrupted; late prompt RPCs must not resurrect them.
+   * An id stays "outstanding" until its late prompt settlement has been
+   * consumed (duplicate-terminal-event risk ends there); afterwards it is
+   * "settled" and only filters late post-cancel notifications, so settled
+   * ids are evicted first when the map is bounded.
+   */
+  interruptedTurnIds: Map<TurnId, "outstanding" | "settled">;
   /** Number of sendTurn prompts currently in flight or being prepared.
    * >0 means a turn is actively running, so a new sendTurn is a steer that
    * continues it, and only the last remaining prompt settles the turn. */
@@ -163,22 +169,42 @@ const resolveNotificationTurnId = (ctx: KimiSessionContext): TurnId | undefined 
 const resolveCallbackTurnId = (ctx: KimiSessionContext): TurnId | undefined => ctx.activeTurnId;
 
 /**
- * Upper bound for `interruptedTurnIds`. Ids must live long enough to filter
- * late post-cancel activity, but an unbounded set leaks one entry per
- * interrupted turn for the whole session. Eviction is FIFO (Set insertion
- * order); 128 concurrent not-yet-settled interrupted turns is far beyond any
- * realistic flow.
+ * Soft bound for `interruptedTurnIds`. Settled ids are evicted first (FIFO);
+ * outstanding ids are never evicted, since dropping one could let a late
+ * settlement emit a duplicate terminal event — the map may exceed this bound
+ * only while that many interrupted turns are still awaiting a late result,
+ * which is far beyond any realistic flow.
  */
 export const KIMI_MAX_INTERRUPTED_TURN_IDS = 128;
 
-export const markKimiTurnInterrupted = (interruptedTurnIds: Set<TurnId>, turnId: TurnId): void => {
-  interruptedTurnIds.add(turnId);
-  while (interruptedTurnIds.size > KIMI_MAX_INTERRUPTED_TURN_IDS) {
-    const oldest = interruptedTurnIds.values().next();
-    if (oldest.done) {
-      break;
+export const markKimiTurnInterrupted = (
+  interruptedTurnIds: Map<TurnId, "outstanding" | "settled">,
+  turnId: TurnId,
+): void => {
+  interruptedTurnIds.set(turnId, "outstanding");
+  if (interruptedTurnIds.size <= KIMI_MAX_INTERRUPTED_TURN_IDS) {
+    return;
+  }
+  for (const [candidateId, status] of interruptedTurnIds) {
+    if (interruptedTurnIds.size <= KIMI_MAX_INTERRUPTED_TURN_IDS) {
+      return;
     }
-    interruptedTurnIds.delete(oldest.value);
+    if (status === "settled") {
+      interruptedTurnIds.delete(candidateId);
+    }
+  }
+};
+
+/**
+ * Marks an interrupted turn's late settlement as consumed. Settled ids keep
+ * filtering late notifications but become eligible for bounded eviction.
+ */
+export const settleKimiInterruptedTurn = (
+  interruptedTurnIds: Map<TurnId, "outstanding" | "settled">,
+  turnId: TurnId,
+): void => {
+  if (interruptedTurnIds.has(turnId)) {
+    interruptedTurnIds.set(turnId, "settled");
   }
 };
 
@@ -337,10 +363,14 @@ export function makeKimiAdapter(kimiSettings: KimiSettings, options?: KimiAdapte
           // interruptTurn already consumed every prompt slot for this turn. A
           // late prompt result must neither emit a second terminal event nor
           // consume a slot belonging to a newer turn on the same ACP session.
-          if (
-            liveCtx.acpSessionId !== expectedAcpSessionId ||
-            liveCtx.interruptedTurnIds.has(turnId)
-          ) {
+          if (liveCtx.acpSessionId !== expectedAcpSessionId) {
+            return;
+          }
+          if (liveCtx.interruptedTurnIds.has(turnId)) {
+            // The late settlement this id was retained for has arrived; it is
+            // now only needed to filter late notifications, so it becomes
+            // eligible for bounded eviction.
+            settleKimiInterruptedTurn(liveCtx.interruptedTurnIds, turnId);
             return;
           }
           if (options?.emitTurnCompletion !== false) {
@@ -737,7 +767,7 @@ export function makeKimiAdapter(kimiSettings: KimiSettings, options?: KimiAdapte
             lastPlanFingerprint: undefined,
             activeTurnId: undefined,
             lastActiveTurnId: undefined,
-            interruptedTurnIds: new Set(),
+            interruptedTurnIds: new Map(),
             promptsInFlight: 0,
             currentModelId: boundModelId,
             stopped: false,
@@ -838,7 +868,9 @@ export function makeKimiAdapter(kimiSettings: KimiSettings, options?: KimiAdapte
             Effect.catch((cause) =>
               Effect.logError("Failed to process Kimi runtime notification.", { cause }),
             ),
-            Effect.forkChild,
+            // The drain must outlive startSession: forkChild ties it to the
+            // caller's fiber, which may end when startSession returns.
+            Effect.forkIn(sessionScope),
           );
 
           ctx.notificationFiber = nf;
