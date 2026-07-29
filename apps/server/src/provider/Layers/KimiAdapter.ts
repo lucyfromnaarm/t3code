@@ -103,6 +103,10 @@ interface KimiSessionContext {
   turns: Array<{ id: TurnId; items: Array<unknown> }>;
   lastPlanFingerprint: string | undefined;
   activeTurnId: TurnId | undefined;
+  /** Most recent turn that was active; agents that keep emitting after the
+   * prompt RPC resolves (e.g. kimi after end_turn) are attributed to it
+   * instead of being silently dropped. */
+  lastActiveTurnId: TurnId | undefined;
   /** Turns already interrupted; late prompt RPCs must not resurrect them. */
   interruptedTurnIds: Set<TurnId>;
   /** Number of sendTurn prompts currently in flight or being prepared.
@@ -153,9 +157,30 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-const resolveNotificationTurnId = (ctx: KimiSessionContext): TurnId | undefined => ctx.activeTurnId;
+const resolveNotificationTurnId = (ctx: KimiSessionContext): TurnId | undefined =>
+  ctx.activeTurnId ?? ctx.lastActiveTurnId;
 
 const resolveCallbackTurnId = (ctx: KimiSessionContext): TurnId | undefined => ctx.activeTurnId;
+
+/**
+ * Upper bound for `interruptedTurnIds`. Ids must live long enough to filter
+ * late post-cancel activity, but an unbounded set leaks one entry per
+ * interrupted turn for the whole session. Eviction is FIFO (Set insertion
+ * order); 128 concurrent not-yet-settled interrupted turns is far beyond any
+ * realistic flow.
+ */
+export const KIMI_MAX_INTERRUPTED_TURN_IDS = 128;
+
+export const markKimiTurnInterrupted = (interruptedTurnIds: Set<TurnId>, turnId: TurnId): void => {
+  interruptedTurnIds.add(turnId);
+  while (interruptedTurnIds.size > KIMI_MAX_INTERRUPTED_TURN_IDS) {
+    const oldest = interruptedTurnIds.values().next();
+    if (oldest.done) {
+      break;
+    }
+    interruptedTurnIds.delete(oldest.value);
+  }
+};
 
 const resolveSessionCallbackTurnId = (
   sessions: ReadonlyMap<ThreadId, KimiSessionContext>,
@@ -711,6 +736,7 @@ export function makeKimiAdapter(kimiSettings: KimiSettings, options?: KimiAdapte
             turns: [],
             lastPlanFingerprint: undefined,
             activeTurnId: undefined,
+            lastActiveTurnId: undefined,
             interruptedTurnIds: new Set(),
             promptsInFlight: 0,
             currentModelId: boundModelId,
@@ -863,6 +889,7 @@ export function makeKimiAdapter(kimiSettings: KimiSettings, options?: KimiAdapte
             // Bind the turn id before cooperative yields so interruptTurn can
             // settle this prompt even if stop arrives during preparation.
             ctx.activeTurnId = turnId;
+            ctx.lastActiveTurnId = turnId;
             ctx.session = {
               ...ctx.session,
               status: steeringTurnId === undefined ? "connecting" : "running",
@@ -1229,7 +1256,7 @@ export function makeKimiAdapter(kimiSettings: KimiSettings, options?: KimiAdapte
           }
           const interruptedTurnId = turnId ?? activeTurnId;
           if (interruptedTurnId !== undefined) {
-            ctx.interruptedTurnIds.add(interruptedTurnId);
+            markKimiTurnInterrupted(ctx.interruptedTurnIds, interruptedTurnId);
           }
           return {
             _tag: "Proceed" as const,
@@ -1271,7 +1298,7 @@ export function makeKimiAdapter(kimiSettings: KimiSettings, options?: KimiAdapte
               ),
             );
             if (interruptedTurnId) {
-              ctx.interruptedTurnIds.add(interruptedTurnId);
+              markKimiTurnInterrupted(ctx.interruptedTurnIds, interruptedTurnId);
               yield* settlePromptInFlight(threadId, interruptedTurnId, ctx.acpSessionId, {
                 completedStopReason: "cancelled",
                 settleAllPrompts: true,

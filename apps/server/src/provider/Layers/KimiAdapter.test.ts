@@ -10,6 +10,7 @@ import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
 import * as Ref from "effect/Ref";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
@@ -26,7 +27,12 @@ import {
 } from "@t3tools/contracts";
 
 import { ServerConfig } from "../../config.ts";
-import { kimiPromptSettlementBelongsToContext, makeKimiAdapter } from "./KimiAdapter.ts";
+import {
+  KIMI_MAX_INTERRUPTED_TURN_IDS,
+  kimiPromptSettlementBelongsToContext,
+  makeKimiAdapter,
+  markKimiTurnInterrupted,
+} from "./KimiAdapter.ts";
 const decodeKimiSettings = Schema.decodeSync(KimiSettings);
 
 const __dirname = NodePath.dirname(NodeURL.fileURLToPath(import.meta.url));
@@ -120,6 +126,16 @@ it("requires a settlement to match the live Kimi turn", () => {
       turnId: staleTurnId,
     }),
   );
+});
+
+it("bounds interrupted turn tracking to the most recent ids", () => {
+  const interruptedTurnIds = new Set<TurnId>();
+  for (let index = 0; index < KIMI_MAX_INTERRUPTED_TURN_IDS + 10; index += 1) {
+    markKimiTurnInterrupted(interruptedTurnIds, TurnId.make(`turn-${index}`));
+  }
+  assert.equal(interruptedTurnIds.size, KIMI_MAX_INTERRUPTED_TURN_IDS);
+  assert.isFalse(interruptedTurnIds.has(TurnId.make("turn-0")));
+  assert.isTrue(interruptedTurnIds.has(TurnId.make(`turn-${KIMI_MAX_INTERRUPTED_TURN_IDS + 9}`)));
 });
 
 it.layer(kimiAdapterTestLayer)("KimiAdapterLive", (it) => {
@@ -241,6 +257,65 @@ it.layer(kimiAdapterTestLayer)("KimiAdapterLive", (it) => {
       );
       // Only the initial session setup may switch the model.
       assert.lengthOf(modelSwitches, 1);
+
+      yield* adapter.stopSession(threadId);
+    }),
+  );
+
+  it.effect("forwards session events that arrive after the turn settles", () =>
+    Effect.gen(function* () {
+      const threadId = ThreadId.make("kimi-late-events-after-end-turn");
+      const wrapperPath = yield* Effect.promise(() =>
+        makeMockKimiWrapper({ T3_ACP_EMIT_LATE_UPDATE_AFTER_END_TURN: "1" }),
+      );
+      const adapter = yield* makeTestAdapter(wrapperPath);
+
+      const runtimeEvents: ProviderRuntimeEvent[] = [];
+      const lateDelta = yield* Deferred.make<void>();
+      const eventsFiber = yield* Stream.runForEach(adapter.streamEvents, (event) =>
+        Effect.sync(() => {
+          runtimeEvents.push(event);
+        }).pipe(
+          Effect.andThen(
+            event.type === "content.delta" && event.payload.delta.includes("late after end_turn")
+              ? Deferred.succeed(lateDelta, undefined)
+              : Effect.void,
+          ),
+        ),
+      ).pipe(Effect.forkChild);
+
+      yield* adapter.startSession({
+        threadId,
+        provider: ProviderDriverKind.make("kimi"),
+        cwd: process.cwd(),
+        runtimeMode: "full-access",
+      });
+      yield* adapter.sendTurn({ threadId, input: "hello kimi", attachments: [] });
+
+      // The mock emits a content delta ~75ms after the prompt RPC resolves.
+      // Without turn attribution falling back to the most recent turn, the
+      // event is silently dropped once the turn has settled.
+      const lateDeltaResult = yield* Deferred.await(lateDelta).pipe(
+        Effect.timeoutOption("5 seconds"),
+      );
+      assert.isTrue(
+        Option.isSome(lateDeltaResult),
+        "Timed out waiting for the post-settlement content delta.",
+      );
+      yield* Fiber.interrupt(eventsFiber);
+
+      const turnStarted = runtimeEvents.find((event) => event.type === "turn.started");
+      const turnCompletedIndex = runtimeEvents.findIndex(
+        (event) => event.type === "turn.completed",
+      );
+      const lateDeltaIndex = runtimeEvents.findIndex(
+        (event) =>
+          event.type === "content.delta" && event.payload.delta.includes("late after end_turn"),
+      );
+      assert.isAtLeast(turnCompletedIndex, 0);
+      assert.isAbove(lateDeltaIndex, turnCompletedIndex);
+      const lateEvent = runtimeEvents[lateDeltaIndex];
+      assert.equal(lateEvent?.turnId, turnStarted?.turnId);
 
       yield* adapter.stopSession(threadId);
     }),

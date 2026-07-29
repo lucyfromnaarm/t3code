@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 // @effect-diagnostics nodeBuiltinImport:off
+// @effect-diagnostics globalTimersInEffect:off - The post-response late update must be scheduled outside the Effect request lifecycle (forked Effect work defects once the handler returns).
 import * as NodeFS from "node:fs";
 
 import * as Effect from "effect/Effect";
@@ -44,6 +45,9 @@ const exitOnSetConfigOption = process.env.T3_ACP_EXIT_ON_SET_CONFIG_OPTION === "
 const kimiHandshake = process.env.T3_ACP_KIMI_HANDSHAKE === "1";
 // Mimics `kimi acp` after startup: SIGTERM is handled but does not exit.
 const ignoreSigterm = process.env.T3_ACP_IGNORE_SIGTERM === "1";
+// Mimics agents that keep streaming after the prompt RPC resolves: real
+// `kimi acp` continues emitting session updates after end_turn.
+const emitLateUpdateAfterEndTurn = process.env.T3_ACP_EMIT_LATE_UPDATE_AFTER_END_TURN === "1";
 // Mimics `kimi acp` transport teardown: the agent exits once stdin closes.
 const exitOnStdinClose = process.env.T3_ACP_EXIT_ON_STDIN_CLOSE === "1";
 const promptResponseText = process.env.T3_ACP_PROMPT_RESPONSE_TEXT;
@@ -940,6 +944,21 @@ const program = Effect.gen(function* () {
           content: { type: "text", text: promptResponseText ?? "hello from mock" },
         },
       });
+
+      if (emitLateUpdateAfterEndTurn) {
+        // Fire-and-forget: the notification must arrive after the prompt
+        // response below, so schedule it outside the Effect request lifecycle
+        // (forked Effect work defects once the handler has returned).
+        setTimeout(() => {
+          writeJsonRpcNotification("session/update", {
+            sessionId: requestedSessionId,
+            update: {
+              sessionUpdate: "agent_message_chunk",
+              content: { type: "text", text: "late after end_turn" },
+            },
+          });
+        }, 75);
+      }
 
       return { stopReason: "end_turn" };
     }),
