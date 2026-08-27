@@ -210,10 +210,9 @@ export const ServerProvider = Schema.Struct({
   skills: Schema.Array(ServerProviderSkill).pipe(Schema.withDecodingDefault(Effect.succeed([]))),
   versionAdvisory: Schema.optionalKey(ServerProviderVersionAdvisory),
   updateState: Schema.optionalKey(ServerProviderUpdateState),
-  // Plan rate-limit windows captured by the account probe. Absent when the
-  // account has no plan limits (API key, proxy, Bedrock) or the probe could
-  // not read them. Forward-compatible per window so one undecodable window
-  // drops alone instead of taking the whole provider snapshot with it.
+  // Plan rate-limit windows from the account probe; absent when the account
+  // has no plan limits (API key, proxy, Bedrock) or the probe could not read
+  // them. Forward-compatible so one undecodable window drops alone.
   rateLimits: Schema.optionalKey(ForwardCompatibleArray(ServerProviderRateLimitWindow)),
 });
 export type ServerProvider = typeof ServerProvider.Type;

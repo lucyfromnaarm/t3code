@@ -643,9 +643,8 @@ type ClaudeCapabilitiesProbe = {
 
 // ── Plan rate-limit usage ───────────────────────────────────────────
 
-// Bounded separately from the outer probe timeout so a slow or hung usage
-// control request degrades to "no usage shown" instead of failing the whole
-// capabilities probe (which would blank auth status in the UI).
+// Wall-clock cap on the usage control request; a slow or hung read costs
+// only the usage block, never the probe's account data.
 const CLAUDE_USAGE_TIMEOUT_MS = 5_000;
 
 /**
@@ -665,10 +664,9 @@ const CLAUDE_USAGE_WINDOW_KEYS: ReadonlyArray<{
 ];
 
 /**
- * Map the SDK usage control response (treated as untrusted input — the
- * endpoint shape is experimental) to contract rate-limit windows. Returns
- * undefined when the response reports `rate_limits_available: false` or
- * carries nothing renderable, so callers can omit the field entirely.
+ * Map the SDK usage control response (untrusted input, the endpoint is
+ * experimental) to contract rate-limit windows; undefined when nothing
+ * is renderable.
  */
 export function mapClaudeUsageRateLimits(
   response: unknown,
@@ -711,7 +709,7 @@ export function mapClaudeUsageRateLimits(
   // Newer SDKs report per-model weekly windows in `model_scoped`, each with
   // a display name (e.g. "Fable"). Dedupe against the named keys above.
   const modelScoped = limitsRecord["model_scoped"];
-  if (globalThis.Array.isArray(modelScoped)) {
+  if (Array.isArray(modelScoped)) {
     for (const entry of modelScoped) {
       if (!entry || typeof entry !== "object") continue;
       const displayName = (entry as { display_name?: unknown }).display_name;
@@ -727,13 +725,11 @@ type ClaudeUsageCapableQuery = {
 };
 
 /**
- * Read plan rate-limit windows from a live probe query. The control request
- * is optional on the SDK surface and experimental on the wire, so every
- * failure mode (method absent, request rejected, deadline hit) degrades to
- * undefined rather than failing the probe. The deadline runs at the promise
- * layer on the wall clock: an Effect-level timeout would run on the virtual
- * test clock under @effect/vitest and never fire when a CLI ignores the
- * control request, hanging the probe.
+ * Read plan rate-limit windows from a live probe query. Every failure mode
+ * (method absent, request rejected, deadline hit) degrades to undefined.
+ * The deadline is a wall-clock promise race: an Effect-level timeout runs
+ * on the virtual test clock under @effect/vitest and would hang the probe
+ * when a CLI ignores the control request.
  */
 const readClaudeRateLimits = (
   q: ClaudeUsageCapableQuery,
@@ -835,14 +831,10 @@ function waitForAbortSignal(signal: AbortSignal): Promise<void> {
  * Code subprocess completes its local initialization IPC (returning
  * account info and slash commands) but never starts a model turn. For
  * first-party subscription auth, the probe then issues one usage control
- * request (a claude.ai usage-endpoint read) on the same live session to
- * capture plan rate-limit windows. The whole probe runs on the provider
- * health cadence, which is demand-gated and defaults to every 5 minutes.
- *
- * Budgets are sequential, not nested: initialization gets the full
- * CAPABILITIES_PROBE_TIMEOUT_MS, and the usage read gets its own
- * CLAUDE_USAGE_TIMEOUT_MS afterwards, so a slow usage read can only cost
- * the rate-limit block, never the already-obtained account data.
+ * request (a claude.ai usage-endpoint read) on the same live session.
+ * Budgets are sequential, not nested: init gets the full probe timeout and
+ * the usage read gets its own cap afterwards, so a slow usage read can
+ * only cost the rate-limit block, never already-obtained account data.
  *
  * This is used as a fallback when `claude auth status` does not include
  * subscription type information.

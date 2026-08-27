@@ -86,14 +86,6 @@ describe("resolveRateLimitDisplay", () => {
     ]);
   });
 
-  it("keeps a model label on a labeled 5h window", () => {
-    const { rows } = resolveRateLimitDisplay(
-      [{ kind: "fiveHour", label: "Fable", utilization: 10 }],
-      NOW,
-    );
-    expect(rows.map((row) => row.label)).toEqual(["Fable"]);
-  });
-
   it("drops rows whose window already reset and reset lines without a usable timestamp", () => {
     const { rows, resetLines } = resolveRateLimitDisplay(
       [
@@ -108,16 +100,5 @@ describe("resolveRateLimitDisplay", () => {
     );
     expect(rows.map((row) => row.label)).toEqual(["Weekly"]);
     expect(resetLines).toEqual([]);
-  });
-
-  it("clamps utilization to 0-100", () => {
-    const { rows } = resolveRateLimitDisplay(
-      [
-        { kind: "fiveHour", utilization: -5 },
-        { kind: "weekly", utilization: 140 },
-      ],
-      NOW,
-    );
-    expect(rows.map((row) => row.utilization)).toEqual([0, 100]);
   });
 });

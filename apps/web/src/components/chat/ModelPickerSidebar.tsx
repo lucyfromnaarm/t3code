@@ -30,11 +30,16 @@ function describeUnavailableInstance(entry: ProviderInstanceEntry): string {
   return msg ? `${label} — ${kind}. ${msg}` : `${label} — ${kind}.`;
 }
 
+const RATE_LIMIT_LEVEL_CLASSES = {
+  normal: { percent: "", bar: "bg-muted-foreground" },
+  warning: { percent: "text-warning-foreground", bar: "bg-warning" },
+  danger: { percent: "text-destructive", bar: "bg-destructive" },
+} as const;
+
 /**
- * Plan usage meters below the account name in the rail tooltip: one static
- * bar per resolved window (5h, weekly, model weekly), plus reset lines.
- * Callers resolve the display via `resolveRateLimitDisplay` and only render
- * this when it produced rows, so name-only tooltips stay untouched.
+ * Plan usage meters below the account name in the rail tooltip. Callers
+ * resolve the display via `resolveRateLimitDisplay` and only render this
+ * when it produced rows, so name-only tooltips stay untouched.
  */
 function InstanceRateLimits(props: {
   rows: ReadonlyArray<RateLimitRow>;
@@ -46,29 +51,13 @@ function InstanceRateLimits(props: {
         <div key={row.label}>
           <div className="mb-0.5 flex items-center justify-between gap-4 text-[11px] leading-4 text-muted-foreground">
             <span>{row.label}</span>
-            <span
-              className={cn(
-                "tabular-nums",
-                row.level === "danger"
-                  ? "text-destructive"
-                  : row.level === "warning"
-                    ? "text-warning-foreground"
-                    : undefined,
-              )}
-            >
+            <span className={cn("tabular-nums", RATE_LIMIT_LEVEL_CLASSES[row.level].percent)}>
               {row.utilization}%
             </span>
           </div>
           <div className="h-0.75 overflow-hidden rounded-full bg-foreground/10">
             <div
-              className={cn(
-                "h-full rounded-full",
-                row.level === "danger"
-                  ? "bg-destructive"
-                  : row.level === "warning"
-                    ? "bg-warning"
-                    : "bg-muted-foreground",
-              )}
+              className={cn("h-full rounded-full", RATE_LIMIT_LEVEL_CLASSES[row.level].bar)}
               style={{ width: `${row.utilization}%` }}
             />
           </div>
@@ -204,8 +193,8 @@ export const ModelPickerSidebar = memo(function ModelPickerSidebar(props: {
                 : showNewBadge
                   ? `${entry.displayName} — New`
                   : entry.displayName;
-            // Resolved once per render; the popup only mounts while hovered,
-            // so the clock is at most as stale as the open tooltip.
+            // The popup only mounts while hovered, so the clock read here is
+            // at most as stale as the open tooltip.
             const rateLimits =
               !isUnavailable && !isContextDisabled ? entry.snapshot.rateLimits : undefined;
             const usage =

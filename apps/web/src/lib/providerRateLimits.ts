@@ -69,12 +69,12 @@ export function resolveRateLimitDisplay(
  * Reset timestamp as "6:00 PM" on the same calendar day, "Thu 6:00 PM"
  * within the next six days, and "Sep 3 6:00 PM" beyond that — a weekly
  * window resetting a full week out would otherwise print today's weekday
- * and read as hours away. Past or unparseable timestamps yield undefined
- * so stale probe data shows no reset line.
+ * and read as hours away. Unparseable timestamps yield undefined; past
+ * ones never reach here (their rows are dropped above).
  */
 function formatRateLimitReset(resetsAt: string, now: Date): string | undefined {
   const reset = new Date(resetsAt);
-  if (Number.isNaN(reset.getTime()) || reset.getTime() <= now.getTime()) return undefined;
+  if (Number.isNaN(reset.getTime())) return undefined;
   const time = reset.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" });
   const sameDay =
     reset.getFullYear() === now.getFullYear() &&

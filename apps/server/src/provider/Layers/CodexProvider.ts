@@ -62,9 +62,9 @@ export interface CodexAppServerProviderSnapshot {
  * Map an app-server rate-limit snapshot to contract windows. `primary` is
  * the 5-hour window and `secondary` the weekly window; when the snapshot
  * carries `windowDurationMins` that duration decides the kind instead of
- * the position. Durations that match neither a short nor a week-scale
- * window become an open kind slug current clients skip rather than a
- * wrong "Weekly" claim. Returns undefined when nothing is renderable.
+ * the position; longer durations become an open kind slug current clients
+ * skip rather than a wrong "Weekly" claim. Returns undefined when nothing
+ * is renderable.
  */
 export function mapCodexRateLimitWindows(
   response: CodexSchema.V2GetAccountRateLimitsResponse | undefined,
@@ -88,17 +88,17 @@ export function mapCodexRateLimitWindows(
             : "monthly";
     // The schema types resetsAt as an epoch int without pinning the unit;
     // values this large can only be milliseconds. Values past the maximum
-    // representable Date are dropped: DateTime.makeUnsafe would throw and
-    // fail the whole probe over one bad timestamp.
-    const MAX_DATE_MS = 8.64e15;
-    const rawResetsAt =
-      typeof window.resetsAt === "number" && Number.isFinite(window.resetsAt) && window.resetsAt > 0
+    // representable Date (8.64e15 ms) are dropped: DateTime.makeUnsafe
+    // would throw and fail the whole probe over one bad timestamp.
+    const resetsAtMs =
+      typeof window.resetsAt === "number" &&
+      Number.isFinite(window.resetsAt) &&
+      window.resetsAt > 0 &&
+      window.resetsAt <= 8.64e15
         ? window.resetsAt >= 1e12
           ? window.resetsAt
           : window.resetsAt * 1000
         : undefined;
-    const resetsAtMs =
-      rawResetsAt !== undefined && rawResetsAt <= MAX_DATE_MS ? rawResetsAt : undefined;
     windows.push({
       kind,
       utilization: Math.max(0, Math.min(100, window.usedPercent)),
