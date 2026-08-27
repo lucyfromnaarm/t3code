@@ -1,6 +1,8 @@
 import { assert, it } from "@effect/vitest";
 
-import { mapClaudeUsageRateLimits } from "./ClaudeProvider.ts";
+import * as Effect from "effect/Effect";
+
+import { mapClaudeUsageRateLimits, readClaudeRateLimits } from "./ClaudeProvider.ts";
 
 const RESET_AT = "2026-08-27T18:00:00.000Z";
 
@@ -68,4 +70,47 @@ it("ignores the seven_day_oauth_apps window", () => {
       },
     }),
   );
+});
+
+it.effect("resolves windows through a live usage method", () =>
+  Effect.gen(function* () {
+    const windows = yield* readClaudeRateLimits({
+      usage_EXPERIMENTAL_MAY_CHANGE_DO_NOT_RELY_ON_THIS_API_YET: () =>
+        Promise.resolve({
+          rate_limits_available: true,
+          rate_limits: { five_hour: { utilization: 10, resets_at: RESET_AT } },
+        }),
+    });
+    assert.deepStrictEqual(windows, [{ kind: "fiveHour", utilization: 10, resetsAt: RESET_AT }]);
+  }),
+);
+
+it.effect("degrades to undefined when the usage method is absent", () =>
+  Effect.gen(function* () {
+    assert.isUndefined(yield* readClaudeRateLimits({}));
+  }),
+);
+
+it.effect("degrades to undefined when the usage method rejects", () =>
+  Effect.gen(function* () {
+    const windows = yield* readClaudeRateLimits({
+      usage_EXPERIMENTAL_MAY_CHANGE_DO_NOT_RELY_ON_THIS_API_YET: () =>
+        Promise.reject(new Error("control request not supported")),
+    });
+    assert.isUndefined(windows);
+  }),
+);
+
+it("does not let a null-utilization named window burn the label for a model_scoped one", () => {
+  const windows = mapClaudeUsageRateLimits({
+    rate_limits_available: true,
+    rate_limits: {
+      seven_day_opus: { utilization: null, resets_at: RESET_AT },
+      model_scoped: [{ display_name: "Opus", utilization: 44, resets_at: RESET_AT }],
+    },
+  });
+
+  assert.deepStrictEqual(windows, [
+    { kind: "weekly", label: "Opus", utilization: 44, resetsAt: RESET_AT },
+  ]);
 });

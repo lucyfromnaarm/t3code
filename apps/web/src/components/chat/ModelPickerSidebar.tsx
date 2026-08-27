@@ -1,10 +1,10 @@
-import { type ProviderInstanceId, type ServerProviderRateLimitWindow } from "@t3tools/contracts";
+import { type ProviderInstanceId } from "@t3tools/contracts";
 import { memo, useLayoutEffect, useRef, useState } from "react";
 import { SparklesIcon, StarIcon } from "lucide-react";
 import { ProviderInstanceIcon } from "./ProviderInstanceIcon";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import { cn } from "~/lib/utils";
-import { resolveRateLimitDisplay } from "~/lib/providerRateLimits";
+import { resolveRateLimitDisplay, type RateLimitRow } from "~/lib/providerRateLimits";
 import {
   isProviderInstancePickerReady,
   shouldShowInstanceBadge,
@@ -32,20 +32,32 @@ function describeUnavailableInstance(entry: ProviderInstanceEntry): string {
 
 /**
  * Plan usage meters below the account name in the rail tooltip: one static
- * bar per window (5h, weekly, model weekly), plus reset lines per
- * `resolveRateLimitDisplay`. Accounts without plan windows never reach this
- * component, so their tooltip stays the plain name.
+ * bar per resolved window (5h, weekly, model weekly), plus reset lines.
+ * Callers resolve the display via `resolveRateLimitDisplay` and only render
+ * this when it produced rows, so name-only tooltips stay untouched.
  */
-function InstanceRateLimits(props: { windows: ReadonlyArray<ServerProviderRateLimitWindow> }) {
-  const { rows, resetLines } = resolveRateLimitDisplay(props.windows, new Date());
-  if (rows.length === 0) return null;
+function InstanceRateLimits(props: {
+  rows: ReadonlyArray<RateLimitRow>;
+  resetLines: ReadonlyArray<string>;
+}) {
   return (
     <div className="mt-1.5 flex min-w-36 flex-col gap-1.5">
-      {rows.map((row) => (
+      {props.rows.map((row) => (
         <div key={row.label}>
           <div className="mb-0.5 flex items-center justify-between gap-4 text-[11px] leading-4 text-muted-foreground">
             <span>{row.label}</span>
-            <span className="tabular-nums">{row.utilization}%</span>
+            <span
+              className={cn(
+                "tabular-nums",
+                row.level === "danger"
+                  ? "text-destructive"
+                  : row.level === "warning"
+                    ? "text-warning-foreground"
+                    : undefined,
+              )}
+            >
+              {row.utilization}%
+            </span>
           </div>
           <div className="h-0.75 overflow-hidden rounded-full bg-foreground/10">
             <div
@@ -62,9 +74,9 @@ function InstanceRateLimits(props: { windows: ReadonlyArray<ServerProviderRateLi
           </div>
         </div>
       ))}
-      {resetLines.length > 0 ? (
+      {props.resetLines.length > 0 ? (
         <div className="flex flex-col gap-0.5 text-[10px] text-muted-foreground/70">
-          {resetLines.map((line) => (
+          {props.resetLines.map((line) => (
             <span key={line}>{line}</span>
           ))}
         </div>
@@ -192,8 +204,20 @@ export const ModelPickerSidebar = memo(function ModelPickerSidebar(props: {
                 : showNewBadge
                   ? `${entry.displayName} — New`
                   : entry.displayName;
+            // Resolved once per render; the popup only mounts while hovered,
+            // so the clock is at most as stale as the open tooltip.
             const rateLimits =
               !isUnavailable && !isContextDisabled ? entry.snapshot.rateLimits : undefined;
+            const usage =
+              rateLimits && rateLimits.length > 0
+                ? resolveRateLimitDisplay(rateLimits, new Date())
+                : undefined;
+            const usageRows = usage && usage.rows.length > 0 ? usage.rows : undefined;
+            // Base UI tooltips are invisible to screen readers, so the usage
+            // summary rides the button label like the tooltip text does.
+            const usageAriaSuffix = usageRows
+              ? `, ${usageRows.map((row) => `${row.label} ${row.utilization}% used`).join(", ")}`
+              : "";
 
             const button = (
               <button
@@ -217,8 +241,8 @@ export const ModelPickerSidebar = memo(function ModelPickerSidebar(props: {
                   isDisabled
                     ? tooltip
                     : showNewBadge
-                      ? `${entry.displayName}, new`
-                      : entry.displayName
+                      ? `${entry.displayName}, new${usageAriaSuffix}`
+                      : `${entry.displayName}${usageAriaSuffix}`
                 }
               >
                 <ProviderInstanceIcon
@@ -267,10 +291,10 @@ export const ModelPickerSidebar = memo(function ModelPickerSidebar(props: {
                     align="center"
                     className={PICKER_TOOLTIP_CLASS}
                   >
-                    {rateLimits && rateLimits.length > 0 ? (
+                    {usageRows ? (
                       <div>
                         <div className="font-medium">{tooltip}</div>
-                        <InstanceRateLimits windows={rateLimits} />
+                        <InstanceRateLimits rows={usageRows} resetLines={usage?.resetLines ?? []} />
                       </div>
                     ) : (
                       tooltip

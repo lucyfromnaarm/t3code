@@ -29,11 +29,17 @@ export function resolveRateLimitDisplay(
   const seenLabels = new Set<string>();
   for (const window of windows) {
     const label =
-      window.kind === "fiveHour"
-        ? "5h"
-        : (window.label ?? (window.kind === "weekly" ? "Weekly" : undefined));
+      window.label ??
+      (window.kind === "fiveHour" ? "5h" : window.kind === "weekly" ? "Weekly" : undefined);
     // Labels key the rendered rows, so a duplicate keeps its first window only.
     if (label === undefined || seenLabels.has(label)) continue;
+    // A window whose reset already passed has rolled over since the probe
+    // (sleep, lost demand lease); its utilization is stale, so drop the row
+    // rather than show a full meter for an empty window.
+    if (window.resetsAt !== undefined) {
+      const resetMs = Date.parse(window.resetsAt);
+      if (!Number.isNaN(resetMs) && resetMs <= now.getTime()) continue;
+    }
     seenLabels.add(label);
     const utilization = Math.round(Math.max(0, Math.min(100, window.utilization)));
     rows.push({
@@ -60,9 +66,11 @@ export function resolveRateLimitDisplay(
 }
 
 /**
- * Reset timestamp as "6:00 PM" when it falls on the same calendar day as
- * `now`, otherwise "Thu 6:00 PM". Past or unparseable timestamps yield
- * undefined so stale probe data shows no reset line.
+ * Reset timestamp as "6:00 PM" on the same calendar day, "Thu 6:00 PM"
+ * within the next six days, and "Sep 3 6:00 PM" beyond that — a weekly
+ * window resetting a full week out would otherwise print today's weekday
+ * and read as hours away. Past or unparseable timestamps yield undefined
+ * so stale probe data shows no reset line.
  */
 function formatRateLimitReset(resetsAt: string, now: Date): string | undefined {
   const reset = new Date(resetsAt);
@@ -73,6 +81,9 @@ function formatRateLimitReset(resetsAt: string, now: Date): string | undefined {
     reset.getMonth() === now.getMonth() &&
     reset.getDate() === now.getDate();
   if (sameDay) return time;
-  const weekday = reset.toLocaleDateString(undefined, { weekday: "short" });
-  return `${weekday} ${time}`;
+  const withinSixDays = reset.getTime() - now.getTime() < 6 * 24 * 60 * 60 * 1000;
+  const day = withinSixDays
+    ? reset.toLocaleDateString(undefined, { weekday: "short" })
+    : reset.toLocaleDateString(undefined, { month: "short", day: "numeric" });
+  return `${day} ${time}`;
 }

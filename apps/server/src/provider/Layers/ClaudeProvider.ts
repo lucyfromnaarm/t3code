@@ -683,13 +683,15 @@ export function mapClaudeUsageRateLimits(
   const seenLabels = new Set<string>();
   const pushWindow = (value: unknown, kind: string, label: string | undefined) => {
     if (!value || typeof value !== "object") return;
+    const window = value as { utilization?: unknown; resets_at?: unknown };
+    if (typeof window.utilization !== "number" || !Number.isFinite(window.utilization)) return;
+    // Dedupe only windows that actually rendered, so a named window with a
+    // null utilization cannot burn the label for a later model_scoped one.
     if (label) {
       const labelKey = label.toLowerCase();
       if (seenLabels.has(labelKey)) return;
       seenLabels.add(labelKey);
     }
-    const window = value as { utilization?: unknown; resets_at?: unknown };
-    if (typeof window.utilization !== "number" || !Number.isFinite(window.utilization)) return;
     const resetsAtMs =
       typeof window.resets_at === "string" ? Date.parse(window.resets_at) : Number.NaN;
     windows.push({
@@ -727,19 +729,27 @@ type ClaudeUsageCapableQuery = {
 /**
  * Read plan rate-limit windows from a live probe query. The control request
  * is optional on the SDK surface and experimental on the wire, so every
- * failure mode (method absent, request rejected, timeout) degrades to
- * undefined rather than failing the probe. Bounded separately from the
- * outer probe timeout so a hung usage call cannot blank auth status.
+ * failure mode (method absent, request rejected, deadline hit) degrades to
+ * undefined rather than failing the probe. The deadline runs at the promise
+ * layer on the wall clock: an Effect-level timeout would run on the virtual
+ * test clock under @effect/vitest and never fire when a CLI ignores the
+ * control request, hanging the probe.
  */
 const readClaudeRateLimits = (
   q: ClaudeUsageCapableQuery,
 ): Effect.Effect<ReadonlyArray<ServerProviderRateLimitWindow> | undefined> => {
   const usage = q.usage_EXPERIMENTAL_MAY_CHANGE_DO_NOT_RELY_ON_THIS_API_YET;
   if (typeof usage !== "function") return Effect.succeed(undefined);
-  return Effect.tryPromise(() => usage.call(q)).pipe(
+  return Effect.tryPromise(() => {
+    const deadline = AbortSignal.timeout(CLAUDE_USAGE_TIMEOUT_MS);
+    return Promise.race([
+      usage.call(q),
+      new Promise<undefined>((resolve) => {
+        deadline.addEventListener("abort", () => resolve(undefined), { once: true });
+      }),
+    ]);
+  }).pipe(
     Effect.map(mapClaudeUsageRateLimits),
-    Effect.timeoutOption(CLAUDE_USAGE_TIMEOUT_MS),
-    Effect.map((result) => (Option.isSome(result) ? result.value : undefined)),
     Effect.orElseSucceed(() => undefined),
   );
 };
@@ -823,8 +833,16 @@ function waitForAbortSignal(signal: AbortSignal): Promise<void> {
  * We pass a never-yielding AsyncIterable as the prompt so that no user
  * message is ever written to the subprocess stdin. This means the Claude
  * Code subprocess completes its local initialization IPC (returning
- * account info and slash commands) but never starts an API request to
- * Anthropic. We read the init data and then abort the subprocess.
+ * account info and slash commands) but never starts a model turn. For
+ * first-party subscription auth, the probe then issues one usage control
+ * request (a claude.ai usage-endpoint read) on the same live session to
+ * capture plan rate-limit windows. The whole probe runs on the provider
+ * health cadence, which is demand-gated and defaults to every 5 minutes.
+ *
+ * Budgets are sequential, not nested: initialization gets the full
+ * CAPABILITIES_PROBE_TIMEOUT_MS, and the usage read gets its own
+ * CLAUDE_USAGE_TIMEOUT_MS afterwards, so a slow usage read can only cost
+ * the rate-limit block, never the already-obtained account data.
  *
  * This is used as a fallback when `claude auth status` does not include
  * subscription type information.
@@ -841,21 +859,29 @@ const probeClaudeCapabilities = (
       claudeSettings.binaryPath,
       claudeEnvironment,
     );
-    const q = claudeQuery({
-      // Never yield — we only need initialization data, not a conversation.
-      // This prevents any prompt from reaching the Anthropic API.
-      // oxlint-disable-next-line require-yield
-      prompt: (async function* (): AsyncGenerator<SDKUserMessage> {
-        await waitForAbortSignal(abort.signal);
-      })(),
-      options: buildClaudeCapabilitiesProbeQueryOptions({
-        executablePath,
-        abortController: abort,
-        environment: claudeEnvironment,
-        cwd,
+    // Effect.try keeps a synchronous throw from the SDK's option validation
+    // as a typed failure (degraded probe) instead of an escaping defect.
+    const q = yield* Effect.try(() =>
+      claudeQuery({
+        // Never yield — we only need initialization data, not a conversation.
+        // This prevents any prompt from reaching the Anthropic API.
+        // oxlint-disable-next-line require-yield
+        prompt: (async function* (): AsyncGenerator<SDKUserMessage> {
+          await waitForAbortSignal(abort.signal);
+        })(),
+        options: buildClaudeCapabilitiesProbeQueryOptions({
+          executablePath,
+          abortController: abort,
+          environment: claudeEnvironment,
+          cwd,
+        }),
       }),
-    });
-    const init = yield* Effect.tryPromise(() => q.initializationResult());
+    );
+    const initResult = yield* Effect.tryPromise(() => q.initializationResult()).pipe(
+      Effect.timeoutOption(CAPABILITIES_PROBE_TIMEOUT_MS),
+    );
+    if (Option.isNone(initResult)) return undefined;
+    const init = initResult.value;
     const account = init.account as
       | {
           readonly email?: string;
@@ -869,8 +895,9 @@ const probeClaudeCapabilities = (
     // ANTHROPIC_BASE_URL) and non-firstParty backends (Bedrock, Vertex)
     // have none, so skip the extra control request for them.
     const isFirstPartySubscription =
-      normalizeClaudeAuthMethod(account?.tokenSource) !== "apiKey" &&
-      (account?.apiProvider === undefined || account.apiProvider === "firstParty");
+      account !== undefined &&
+      normalizeClaudeAuthMethod(account.tokenSource) !== "apiKey" &&
+      (account.apiProvider === undefined || account.apiProvider === "firstParty");
     const rateLimits = isFirstPartySubscription ? yield* readClaudeRateLimits(q) : undefined;
     return {
       email: account?.email,
@@ -886,12 +913,8 @@ const probeClaudeCapabilities = (
         if (!abort.signal.aborted) abort.abort();
       }),
     ),
-    Effect.timeoutOption(CAPABILITIES_PROBE_TIMEOUT_MS),
     Effect.result,
-    Effect.map((result) => {
-      if (Result.isFailure(result)) return undefined;
-      return Option.isSome(result.success) ? result.success.value : undefined;
-    }),
+    Effect.map((result) => (Result.isFailure(result) ? undefined : result.success)),
   );
 };
 
@@ -1132,4 +1155,4 @@ export const makePendingClaudeProvider = (
     });
   });
 
-export { probeClaudeCapabilities };
+export { probeClaudeCapabilities, readClaudeRateLimits };

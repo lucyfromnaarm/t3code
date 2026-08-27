@@ -195,3 +195,17 @@ it("returns undefined when the rate-limit read yields nothing renderable", () =>
   assert.isUndefined(mapCodexRateLimitWindows(undefined));
   assert.isUndefined(mapCodexRateLimitWindows({ rateLimits: {} }));
 });
+
+it("gives windows longer than eight days an open kind current clients skip", () => {
+  const windows = mapCodexRateLimitWindows({
+    rateLimits: {
+      primary: { usedPercent: 12, windowDurationMins: 300 },
+      secondary: { usedPercent: 60, windowDurationMins: 30 * 24 * 60 },
+    },
+  });
+
+  assert.deepStrictEqual(windows, [
+    { kind: "fiveHour", utilization: 12 },
+    { kind: "monthly", utilization: 60 },
+  ]);
+});

@@ -62,30 +62,51 @@ describe("resolveRateLimitDisplay", () => {
     expect(resetLines[1]).toMatch(/^Fable resets /);
   });
 
-  it("formats same-day resets as a time and later resets with a weekday", () => {
+  it("formats resets as time, weekday + time, or date + time by distance", () => {
+    const nextDayReset = new Date(2026, 7, 28, 9, 0, 0);
+    // A weekly window resetting a full week out would print today's weekday
+    // and read as hours away, so far resets switch to a date.
+    const fullWeekReset = new Date(2026, 8, 3, 9, 0, 0);
     const { resetLines } = resolveRateLimitDisplay(
       [
         { kind: "fiveHour", utilization: 12, resetsAt: sameDayReset },
-        { kind: "weekly", utilization: 99, resetsAt: nextWeekReset },
+        { kind: "weekly", utilization: 99, resetsAt: nextDayReset.toISOString() },
+        { kind: "weekly", label: "Fable", utilization: 99, resetsAt: fullWeekReset.toISOString() },
       ],
       NOW,
     );
-    expect(resetLines[0]).not.toMatch(/^5h resets \S{3} /);
-    expect(resetLines[1]).toMatch(/^Weekly resets \S{3} /);
+    const formatTime = (date: Date) =>
+      date.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" });
+    const weekday = nextDayReset.toLocaleDateString(undefined, { weekday: "short" });
+    const farDate = fullWeekReset.toLocaleDateString(undefined, { month: "short", day: "numeric" });
+    expect(resetLines).toEqual([
+      `5h resets ${formatTime(new Date(sameDayReset))}`,
+      `Weekly resets ${weekday} ${formatTime(nextDayReset)}`,
+      `Fable resets ${farDate} ${formatTime(fullWeekReset)}`,
+    ]);
   });
 
-  it("drops past or unparseable reset timestamps", () => {
-    const { resetLines } = resolveRateLimitDisplay(
+  it("keeps a model label on a labeled 5h window", () => {
+    const { rows } = resolveRateLimitDisplay(
+      [{ kind: "fiveHour", label: "Fable", utilization: 10 }],
+      NOW,
+    );
+    expect(rows.map((row) => row.label)).toEqual(["Fable"]);
+  });
+
+  it("drops rows whose window already reset and reset lines without a usable timestamp", () => {
+    const { rows, resetLines } = resolveRateLimitDisplay(
       [
         {
           kind: "fiveHour",
-          utilization: 12,
+          utilization: 96,
           resetsAt: new Date(2026, 7, 27, 9, 0, 0).toISOString(),
         },
         { kind: "weekly", utilization: 99, resetsAt: "not-a-date" },
       ],
       NOW,
     );
+    expect(rows.map((row) => row.label)).toEqual(["Weekly"]);
     expect(resetLines).toEqual([]);
   });
 
