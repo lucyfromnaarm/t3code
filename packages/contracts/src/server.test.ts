@@ -115,6 +115,24 @@ describe("ServerProvider", () => {
 
     expect(parsed.models[0]?.isLegacy).toBe(true);
   });
+
+  it("decodes rate-limit windows to their normalized values, dropping bad windows alone", () => {
+    const parsed = decodeServerProvider({
+      ...baseProviderSnapshot,
+      rateLimits: [
+        // Trimming applies to the decoded value clients read, not the raw wire form.
+        { kind: " weekly ", utilization: 50, resetsAt: "2026-04-10T05:00:00.000Z" },
+        // An undecodable window drops by itself without taking the provider with it.
+        { kind: "", utilization: 10 },
+        { kind: "fiveHour", utilization: 12 },
+      ],
+    });
+
+    expect(parsed.rateLimits).toEqual([
+      { kind: "weekly", utilization: 50, resetsAt: "2026-04-10T05:00:00.000Z" },
+      { kind: "fiveHour", utilization: 12 },
+    ]);
+  });
 });
 
 describe("server config forward compatibility", () => {
