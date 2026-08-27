@@ -203,9 +203,13 @@ export const ModelPickerSidebar = memo(function ModelPickerSidebar(props: {
                 : undefined;
             const usageRows = usage && usage.rows.length > 0 ? usage.rows : undefined;
             // Base UI tooltips are invisible to screen readers, so the usage
-            // summary rides the button label like the tooltip text does.
+            // summary and reset times join the button label like the tooltip
+            // text does.
             const usageAriaSuffix = usageRows
-              ? `, ${usageRows.map((row) => `${row.label} ${row.utilization}% used`).join(", ")}`
+              ? `, ${[
+                  ...usageRows.map((row) => `${row.label} ${row.utilization}% used`),
+                  ...(usage?.resetLines ?? []),
+                ].join(", ")}`
               : "";
 
             const button = (
