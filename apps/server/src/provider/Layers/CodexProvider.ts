@@ -87,13 +87,18 @@ export function mapCodexRateLimitWindows(
             ? "weekly"
             : "monthly";
     // The schema types resetsAt as an epoch int without pinning the unit;
-    // values this large can only be milliseconds.
-    const resetsAtMs =
+    // values this large can only be milliseconds. Values past the maximum
+    // representable Date are dropped: DateTime.makeUnsafe would throw and
+    // fail the whole probe over one bad timestamp.
+    const MAX_DATE_MS = 8.64e15;
+    const rawResetsAt =
       typeof window.resetsAt === "number" && Number.isFinite(window.resetsAt) && window.resetsAt > 0
         ? window.resetsAt >= 1e12
           ? window.resetsAt
           : window.resetsAt * 1000
         : undefined;
+    const resetsAtMs =
+      rawResetsAt !== undefined && rawResetsAt <= MAX_DATE_MS ? rawResetsAt : undefined;
     windows.push({
       kind,
       utilization: Math.max(0, Math.min(100, window.usedPercent)),

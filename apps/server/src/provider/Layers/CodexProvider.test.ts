@@ -209,3 +209,13 @@ it("gives windows longer than eight days an open kind current clients skip", () 
     { kind: "monthly", utilization: 60 },
   ]);
 });
+
+it("drops reset timestamps beyond the representable Date range instead of throwing", () => {
+  const windows = mapCodexRateLimitWindows({
+    rateLimits: {
+      primary: { usedPercent: 20, resetsAt: 8_640_000_000_000_001 },
+    },
+  });
+
+  assert.deepStrictEqual(windows, [{ kind: "fiveHour", utilization: 20 }]);
+});
