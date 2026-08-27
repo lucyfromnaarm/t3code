@@ -17,6 +17,7 @@ describe("resolveRateLimitDisplay", () => {
         { kind: "weekly", label: "Fable", utilization: 11.9 },
       ],
       NOW,
+      "locale",
     );
     expect(rows).toEqual([
       { label: "5h", utilization: 42, level: "normal" },
@@ -32,6 +33,7 @@ describe("resolveRateLimitDisplay", () => {
         { kind: "monthly", label: "Extra", utilization: 20 },
       ],
       NOW,
+      "locale",
     );
     expect(rows.map((row) => row.label)).toEqual(["Extra"]);
   });
@@ -44,6 +46,7 @@ describe("resolveRateLimitDisplay", () => {
         { kind: "weekly", label: "Opus", utilization: 95 },
       ],
       NOW,
+      "locale",
     );
     expect(rows.map((row) => row.level)).toEqual(["normal", "warning", "danger"]);
   });
@@ -56,6 +59,7 @@ describe("resolveRateLimitDisplay", () => {
         { kind: "weekly", label: "Fable", utilization: 90, resetsAt: nextWeekReset },
       ],
       NOW,
+      "locale",
     );
     expect(resetLines).toHaveLength(2);
     expect(resetLines[0]).toMatch(/^5h resets /);
@@ -74,6 +78,7 @@ describe("resolveRateLimitDisplay", () => {
         { kind: "weekly", label: "Fable", utilization: 99, resetsAt: fullWeekReset.toISOString() },
       ],
       NOW,
+      "locale",
     );
     const formatTime = (date: Date) =>
       date.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" });
@@ -97,6 +102,7 @@ describe("resolveRateLimitDisplay", () => {
         { kind: "weekly", utilization: 99, resetsAt: "not-a-date" },
       ],
       NOW,
+      "locale",
     );
     expect(rows.map((row) => row.label)).toEqual(["Weekly"]);
     expect(resetLines).toEqual([]);

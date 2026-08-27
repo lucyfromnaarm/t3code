@@ -127,6 +127,19 @@ export function formatShortTimestamp(isoDate: string, timestampFormat: Timestamp
   return getTimestampFormatter(timestampFormat, false).format(date);
 }
 
+/**
+ * Short weekday ("Thu") or month-day ("Sep 3") label for an upcoming
+ * instant, in the host locale like every other timestamp in the UI.
+ */
+export function formatUpcomingDayLabel(isoDate: string, style: "weekday" | "date"): string {
+  const date = parseTimestampDate(isoDate);
+  if (!date) return "";
+  return new Intl.DateTimeFormat(
+    timestampLocale,
+    style === "weekday" ? { weekday: "short" } : { month: "short", day: "numeric" },
+  ).format(date);
+}
+
 const numericDateFormatter = new Intl.DateTimeFormat(timestampLocale, {
   month: "numeric",
   day: "numeric",

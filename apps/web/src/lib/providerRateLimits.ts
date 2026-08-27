@@ -1,4 +1,7 @@
 import type { ServerProviderRateLimitWindow } from "@t3tools/contracts";
+import type { TimestampFormat } from "@t3tools/contracts/settings";
+
+import { formatShortTimestamp, formatUpcomingDayLabel } from "~/timestampFormat";
 
 /** Bar and percent turn amber at 80% and red at 95%. */
 export const RATE_LIMIT_WARNING_UTILIZATION = 80;
@@ -23,6 +26,7 @@ export interface RateLimitRow {
 export function resolveRateLimitDisplay(
   windows: ReadonlyArray<ServerProviderRateLimitWindow>,
   now: Date,
+  timestampFormat: TimestampFormat,
 ): { readonly rows: ReadonlyArray<RateLimitRow>; readonly resetLines: ReadonlyArray<string> } {
   const rows: RateLimitRow[] = [];
   const resetLines: string[] = [];
@@ -56,7 +60,7 @@ export function resolveRateLimitDisplay(
       window.kind === "fiveHour" ||
       (window.kind === "weekly" && utilization >= WEEKLY_RESET_UTILIZATION);
     if (showReset && window.resetsAt !== undefined) {
-      const formatted = formatRateLimitReset(window.resetsAt, now);
+      const formatted = formatRateLimitReset(window.resetsAt, now, timestampFormat);
       if (formatted !== undefined) {
         resetLines.push(`${label} resets ${formatted}`);
       }
@@ -72,18 +76,20 @@ export function resolveRateLimitDisplay(
  * and read as hours away. Unparseable timestamps yield undefined; past
  * ones never reach here (their rows are dropped above).
  */
-function formatRateLimitReset(resetsAt: string, now: Date): string | undefined {
+function formatRateLimitReset(
+  resetsAt: string,
+  now: Date,
+  timestampFormat: TimestampFormat,
+): string | undefined {
   const reset = new Date(resetsAt);
   if (Number.isNaN(reset.getTime())) return undefined;
-  const time = reset.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" });
+  const time = formatShortTimestamp(resetsAt, timestampFormat);
   const sameDay =
     reset.getFullYear() === now.getFullYear() &&
     reset.getMonth() === now.getMonth() &&
     reset.getDate() === now.getDate();
   if (sameDay) return time;
   const withinSixDays = reset.getTime() - now.getTime() < 6 * 24 * 60 * 60 * 1000;
-  const day = withinSixDays
-    ? reset.toLocaleDateString(undefined, { weekday: "short" })
-    : reset.toLocaleDateString(undefined, { month: "short", day: "numeric" });
+  const day = formatUpcomingDayLabel(resetsAt, withinSixDays ? "weekday" : "date");
   return `${day} ${time}`;
 }

@@ -5,6 +5,7 @@ import { ProviderInstanceIcon } from "./ProviderInstanceIcon";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import { cn } from "~/lib/utils";
 import { resolveRateLimitDisplay, type RateLimitRow } from "~/lib/providerRateLimits";
+import { useClientSettings } from "../../hooks/useSettings";
 import {
   isProviderInstancePickerReady,
   shouldShowInstanceBadge,
@@ -111,6 +112,7 @@ export const ModelPickerSidebar = memo(function ModelPickerSidebar(props: {
     props.onSelectInstance(instanceId);
   };
   const showFavorites = props.showFavorites ?? true;
+  const { timestampFormat } = useClientSettings();
   const [hoveredInstanceId, setHoveredInstanceId] = useState<ProviderInstanceId | null>(null);
   const sidebarContentRef = useRef<HTMLDivElement>(null);
   const [selectedIndicatorTop, setSelectedIndicatorTop] = useState<number | null>(null);
@@ -199,7 +201,7 @@ export const ModelPickerSidebar = memo(function ModelPickerSidebar(props: {
               !isUnavailable && !isContextDisabled ? entry.snapshot.rateLimits : undefined;
             const usage =
               rateLimits && rateLimits.length > 0
-                ? resolveRateLimitDisplay(rateLimits, new Date())
+                ? resolveRateLimitDisplay(rateLimits, new Date(), timestampFormat)
                 : undefined;
             const usageRows = usage && usage.rows.length > 0 ? usage.rows : undefined;
             // Base UI tooltips are invisible to screen readers, so the usage
