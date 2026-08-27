@@ -4,6 +4,8 @@ import { SparklesIcon, StarIcon } from "lucide-react";
 import { ProviderInstanceIcon } from "./ProviderInstanceIcon";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import { cn } from "~/lib/utils";
+import { resolveRateLimitDisplay, type RateLimitRow } from "~/lib/providerRateLimits";
+import { useClientSettings } from "~/hooks/useSettings";
 import {
   isProviderInstancePickerReady,
   shouldShowInstanceBadge,
@@ -27,6 +29,51 @@ function describeUnavailableInstance(entry: ProviderInstanceEntry): string {
     entry.status === "error" ? "Unavailable" : entry.status === "warning" ? "Limited" : "Not ready";
   const msg = entry.snapshot.message?.trim();
   return msg ? `${label} — ${kind}. ${msg}` : `${label} — ${kind}.`;
+}
+
+const RATE_LIMIT_LEVEL_CLASSES = {
+  normal: { percent: "", bar: "bg-muted-foreground" },
+  warning: { percent: "text-warning-foreground", bar: "bg-warning" },
+  danger: { percent: "text-destructive", bar: "bg-destructive" },
+} as const;
+
+/**
+ * Plan usage meters below the account name in the rail tooltip, one static
+ * (never animated) bar per resolved window. Callers resolve the display
+ * via `resolveRateLimitDisplay` and only render this
+ * when it produced rows, so name-only tooltips stay untouched.
+ */
+function InstanceRateLimits(props: {
+  rows: ReadonlyArray<RateLimitRow>;
+  resetLines: ReadonlyArray<string>;
+}) {
+  return (
+    <div className="mt-1.5 flex min-w-36 flex-col gap-1.5">
+      {props.rows.map((row) => (
+        <div key={row.label}>
+          <div className="mb-0.5 flex items-center justify-between gap-4 text-[11px] leading-4 text-muted-foreground">
+            <span>{row.label}</span>
+            <span className={cn("tabular-nums", RATE_LIMIT_LEVEL_CLASSES[row.level].percent)}>
+              {row.utilization}%
+            </span>
+          </div>
+          <div className="h-0.75 overflow-hidden rounded-full bg-foreground/10">
+            <div
+              className={cn("h-full rounded-full", RATE_LIMIT_LEVEL_CLASSES[row.level].bar)}
+              style={{ width: `${row.utilization}%` }}
+            />
+          </div>
+        </div>
+      ))}
+      {props.resetLines.length > 0 ? (
+        <div className="flex flex-col gap-0.5 text-[10px] text-muted-foreground/70">
+          {props.resetLines.map((line) => (
+            <span key={line}>{line}</span>
+          ))}
+        </div>
+      ) : null}
+    </div>
+  );
 }
 
 const SELECTED_INDICATOR_CLASS =
@@ -66,6 +113,7 @@ export const ModelPickerSidebar = memo(function ModelPickerSidebar(props: {
     props.onSelectInstance(instanceId);
   };
   const showFavorites = props.showFavorites ?? true;
+  const timestampFormat = useClientSettings((settings) => settings.timestampFormat);
   const [hoveredInstanceId, setHoveredInstanceId] = useState<ProviderInstanceId | null>(null);
   const sidebarContentRef = useRef<HTMLDivElement>(null);
   const [selectedIndicatorTop, setSelectedIndicatorTop] = useState<number | null>(null);
@@ -148,6 +196,24 @@ export const ModelPickerSidebar = memo(function ModelPickerSidebar(props: {
                 : showNewBadge
                   ? `${entry.displayName} — New`
                   : entry.displayName;
+            // The rail only renders while the picker is open, so the clock
+            // read here is at most as stale as the open picker.
+            const rateLimits =
+              !isUnavailable && !isContextDisabled ? entry.snapshot.rateLimits : undefined;
+            const usage =
+              rateLimits && rateLimits.length > 0
+                ? resolveRateLimitDisplay(rateLimits, new Date(), timestampFormat)
+                : undefined;
+            const usageRows = usage && usage.rows.length > 0 ? usage.rows : undefined;
+            // Base UI tooltips are invisible to screen readers, so the usage
+            // summary and reset times join the button label like the tooltip
+            // text does.
+            const usageAriaSuffix = usageRows
+              ? `, ${[
+                  ...usageRows.map((row) => `${row.label} ${row.utilization}% used`),
+                  ...(usage?.resetLines ?? []),
+                ].join(", ")}`
+              : "";
 
             const button = (
               <button
@@ -171,8 +237,8 @@ export const ModelPickerSidebar = memo(function ModelPickerSidebar(props: {
                   isDisabled
                     ? tooltip
                     : showNewBadge
-                      ? `${entry.displayName}, new`
-                      : entry.displayName
+                      ? `${entry.displayName}, new${usageAriaSuffix}`
+                      : `${entry.displayName}${usageAriaSuffix}`
                 }
               >
                 <ProviderInstanceIcon
@@ -221,7 +287,14 @@ export const ModelPickerSidebar = memo(function ModelPickerSidebar(props: {
                     align="center"
                     className={PICKER_TOOLTIP_CLASS}
                   >
-                    {tooltip}
+                    {usageRows ? (
+                      <div>
+                        <div className="font-medium">{tooltip}</div>
+                        <InstanceRateLimits rows={usageRows} resetLines={usage?.resetLines ?? []} />
+                      </div>
+                    ) : (
+                      tooltip
+                    )}
                   </TooltipPopup>
                 </Tooltip>
               </div>

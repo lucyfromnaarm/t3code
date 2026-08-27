@@ -145,7 +145,14 @@ export const writeProviderStatusCache = (input: {
   readonly filePath: string;
   readonly provider: ServerProvider;
 }) => {
-  const { updateState: _updateState, ...cacheableProvider } = input.provider;
+  // rateLimits are point-in-time usage; hydrating them after a restart would
+  // show arbitrarily stale meters, so they are dropped with updateState and
+  // reappear on the first live probe.
+  const {
+    updateState: _updateState,
+    rateLimits: _rateLimits,
+    ...cacheableProvider
+  } = input.provider;
   return writeFileStringAtomically({
     filePath: input.filePath,
     contents: `${JSON.stringify(cacheableProvider, null, 2)}\n`,

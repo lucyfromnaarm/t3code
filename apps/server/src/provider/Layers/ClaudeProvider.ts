@@ -3,6 +3,7 @@ import {
   type ModelCapabilities,
   type ModelSelection,
   type ServerProviderModel,
+  type ServerProviderRateLimitWindow,
   type ServerProviderSlashCommand,
 } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
@@ -636,6 +637,117 @@ type ClaudeCapabilitiesProbe = {
    */
   readonly apiProvider: string | undefined;
   readonly slashCommands: ReadonlyArray<ServerProviderSlashCommand>;
+  /** Plan rate-limit windows, absent for accounts without plan limits. */
+  readonly rateLimits?: ReadonlyArray<ServerProviderRateLimitWindow>;
+};
+
+// ── Plan rate-limit usage ───────────────────────────────────────────
+
+// Wall-clock cap on the usage control request; a slow or hung read costs
+// only the usage block, never the probe's account data.
+const CLAUDE_USAGE_TIMEOUT_MS = 5_000;
+
+/**
+ * Named windows the claude.ai usage endpoint reports, in display order.
+ * `seven_day_oauth_apps` is intentionally omitted: it tracks third-party
+ * OAuth app usage, not the account's own plan windows.
+ */
+const CLAUDE_USAGE_WINDOW_KEYS: ReadonlyArray<{
+  readonly key: string;
+  readonly kind: string;
+  readonly label?: string;
+}> = [
+  { key: "five_hour", kind: "fiveHour" },
+  { key: "seven_day", kind: "weekly" },
+  { key: "seven_day_opus", kind: "weekly", label: "Opus" },
+  { key: "seven_day_sonnet", kind: "weekly", label: "Sonnet" },
+];
+
+/**
+ * Map the SDK usage control response (untrusted input, the endpoint is
+ * experimental) to contract rate-limit windows; undefined when nothing
+ * is renderable.
+ */
+export function mapClaudeUsageRateLimits(
+  response: unknown,
+): ReadonlyArray<ServerProviderRateLimitWindow> | undefined {
+  if (!response || typeof response !== "object") return undefined;
+  const usage = response as { rate_limits_available?: unknown; rate_limits?: unknown };
+  if (usage.rate_limits_available !== true) return undefined;
+  const limits = usage.rate_limits;
+  if (!limits || typeof limits !== "object") return undefined;
+
+  const windows: ServerProviderRateLimitWindow[] = [];
+  const seenLabels = new Set<string>();
+  const pushWindow = (value: unknown, kind: string, label: string | undefined) => {
+    if (!value || typeof value !== "object") return;
+    const window = value as { utilization?: unknown; resets_at?: unknown };
+    if (typeof window.utilization !== "number" || !Number.isFinite(window.utilization)) return;
+    // Dedupe only windows that actually rendered, so a named window with a
+    // null utilization cannot burn the label for a later model_scoped one.
+    if (label) {
+      const labelKey = label.toLowerCase();
+      if (seenLabels.has(labelKey)) return;
+      seenLabels.add(labelKey);
+    }
+    const resetsAtMs =
+      typeof window.resets_at === "string" ? Date.parse(window.resets_at) : Number.NaN;
+    windows.push({
+      kind,
+      ...(label ? { label } : {}),
+      utilization: Math.max(0, Math.min(100, window.utilization)),
+      ...(Number.isNaN(resetsAtMs)
+        ? {}
+        : { resetsAt: DateTime.formatIso(DateTime.makeUnsafe(resetsAtMs)) }),
+    });
+  };
+
+  const limitsRecord = limits as Record<string, unknown>;
+  for (const named of CLAUDE_USAGE_WINDOW_KEYS) {
+    pushWindow(limitsRecord[named.key], named.kind, named.label);
+  }
+  // Newer SDKs report per-model weekly windows in `model_scoped`, each with
+  // a display name (e.g. "Fable"). Dedupe against the named keys above.
+  const modelScoped = limitsRecord["model_scoped"];
+  if (Array.isArray(modelScoped)) {
+    for (const entry of modelScoped) {
+      if (!entry || typeof entry !== "object") continue;
+      const displayName = (entry as { display_name?: unknown }).display_name;
+      if (typeof displayName !== "string" || displayName.trim().length === 0) continue;
+      pushWindow(entry, "weekly", displayName.trim());
+    }
+  }
+  return windows.length > 0 ? windows : undefined;
+}
+
+type ClaudeUsageCapableQuery = {
+  readonly usage_EXPERIMENTAL_MAY_CHANGE_DO_NOT_RELY_ON_THIS_API_YET?: () => Promise<unknown>;
+};
+
+/**
+ * Read plan rate-limit windows from a live probe query. Every failure mode
+ * (method absent, request rejected, deadline hit) degrades to undefined.
+ * The deadline is a wall-clock promise race: an Effect-level timeout runs
+ * on the virtual test clock under @effect/vitest and would hang the probe
+ * when a CLI ignores the control request.
+ */
+const readClaudeRateLimits = (
+  q: ClaudeUsageCapableQuery,
+): Effect.Effect<ReadonlyArray<ServerProviderRateLimitWindow> | undefined> => {
+  const usage = q.usage_EXPERIMENTAL_MAY_CHANGE_DO_NOT_RELY_ON_THIS_API_YET;
+  if (typeof usage !== "function") return Effect.succeed(undefined);
+  return Effect.tryPromise(() => {
+    const deadline = AbortSignal.timeout(CLAUDE_USAGE_TIMEOUT_MS);
+    return Promise.race([
+      usage.call(q),
+      new Promise<undefined>((resolve) => {
+        deadline.addEventListener("abort", () => resolve(undefined), { once: true });
+      }),
+    ]);
+  }).pipe(
+    Effect.map(mapClaudeUsageRateLimits),
+    Effect.orElseSucceed(() => undefined),
+  );
 };
 
 function parseClaudeInitializationCommands(
@@ -717,8 +829,13 @@ function waitForAbortSignal(signal: AbortSignal): Promise<void> {
  * We pass a never-yielding AsyncIterable as the prompt so that no user
  * message is ever written to the subprocess stdin. This means the Claude
  * Code subprocess completes its local initialization IPC (returning
- * account info and slash commands) but never starts an API request to
- * Anthropic. We read the init data and then abort the subprocess.
+ * account info and slash commands) but never starts a model turn. For
+ * first-party subscription auth, the probe then issues one usage control
+ * request (a claude.ai usage-endpoint read) on the same live session, so
+ * its cost is bounded by the demand-gated health cadence (5 min default).
+ * Budgets are sequential, not nested: init gets the full probe timeout and
+ * the usage read gets its own cap afterwards, so a slow usage read can
+ * only cost the rate-limit block, never already-obtained account data.
  *
  * This is used as a fallback when `claude auth status` does not include
  * subscription type information.
@@ -735,8 +852,10 @@ const probeClaudeCapabilities = (
       claudeSettings.binaryPath,
       claudeEnvironment,
     );
-    return yield* Effect.tryPromise(async () => {
-      const q = claudeQuery({
+    // Effect.try keeps a synchronous throw from the SDK's option validation
+    // as a typed failure (degraded probe) instead of an escaping defect.
+    const q = yield* Effect.try(() =>
+      claudeQuery({
         // Never yield — we only need initialization data, not a conversation.
         // This prevents any prompt from reaching the Anthropic API.
         // oxlint-disable-next-line require-yield
@@ -749,36 +868,46 @@ const probeClaudeCapabilities = (
           environment: claudeEnvironment,
           cwd,
         }),
-      });
-      const init = await q.initializationResult();
-      const account = init.account as
-        | {
-            readonly email?: string;
-            readonly subscriptionType?: string;
-            readonly tokenSource?: string;
-            readonly apiProvider?: string;
-          }
-        | undefined;
-      return {
-        email: account?.email,
-        subscriptionType: account?.subscriptionType,
-        tokenSource: account?.tokenSource,
-        apiProvider: account?.apiProvider,
-        slashCommands: parseClaudeInitializationCommands(init.commands),
-      } satisfies ClaudeCapabilitiesProbe;
-    });
+      }),
+    );
+    const initResult = yield* Effect.tryPromise(() => q.initializationResult()).pipe(
+      Effect.timeoutOption(CAPABILITIES_PROBE_TIMEOUT_MS),
+    );
+    if (Option.isNone(initResult)) return undefined;
+    const init = initResult.value;
+    const account = init.account as
+      | {
+          readonly email?: string;
+          readonly subscriptionType?: string;
+          readonly tokenSource?: string;
+          readonly apiProvider?: string;
+        }
+      | undefined;
+    // Plan windows only exist for first-party subscription auth. API key
+    // tokens (including claude-compatible gateways configured via
+    // ANTHROPIC_BASE_URL) and non-firstParty backends (Bedrock, Vertex)
+    // have none, so skip the extra control request for them.
+    const isFirstPartySubscription =
+      account !== undefined &&
+      normalizeClaudeAuthMethod(account.tokenSource) !== "apiKey" &&
+      (account.apiProvider === undefined || account.apiProvider === "firstParty");
+    const rateLimits = isFirstPartySubscription ? yield* readClaudeRateLimits(q) : undefined;
+    return {
+      email: account?.email,
+      subscriptionType: account?.subscriptionType,
+      tokenSource: account?.tokenSource,
+      apiProvider: account?.apiProvider,
+      slashCommands: parseClaudeInitializationCommands(init.commands),
+      ...(rateLimits ? { rateLimits } : {}),
+    } satisfies ClaudeCapabilitiesProbe;
   }).pipe(
     Effect.ensuring(
       Effect.sync(() => {
         if (!abort.signal.aborted) abort.abort();
       }),
     ),
-    Effect.timeoutOption(CAPABILITIES_PROBE_TIMEOUT_MS),
     Effect.result,
-    Effect.map((result) => {
-      if (Result.isFailure(result)) return undefined;
-      return Option.isSome(result.success) ? result.success.value : undefined;
-    }),
+    Effect.map((result) => (Result.isFailure(result) ? undefined : result.success)),
   );
 };
 
@@ -970,6 +1099,7 @@ export const checkClaudeProviderStatus = Effect.fn("checkClaudeProviderStatus")(
         ...(authMetadata ? authMetadata : {}),
       },
       ...(versionUpgradeMessage ? { message: versionUpgradeMessage } : {}),
+      ...(capabilities.rateLimits ? { rateLimits: capabilities.rateLimits } : {}),
     },
   });
 });
@@ -1018,4 +1148,4 @@ export const makePendingClaudeProvider = (
     });
   });
 
-export { probeClaudeCapabilities };
+export { probeClaudeCapabilities, readClaudeRateLimits };
