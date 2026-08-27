@@ -20,6 +20,7 @@ import type {
   ModelCapabilities,
   ProviderOptionDescriptor,
   ServerProviderModel,
+  ServerProviderRateLimitWindow,
   ServerProviderSkill,
 } from "@t3tools/contracts";
 import { PREFERRED_DEFAULT_CODEX_MODELS, ServerSettingsError } from "@t3tools/contracts";
@@ -48,6 +49,53 @@ export interface CodexAppServerProviderSnapshot {
   readonly version: string | undefined;
   readonly models: ReadonlyArray<ServerProviderModel>;
   readonly skills: ReadonlyArray<ServerProviderSkill>;
+  /** Plan rate-limit windows, absent for accounts without plan limits. */
+  readonly rateLimits?: ReadonlyArray<ServerProviderRateLimitWindow>;
+}
+
+/**
+ * Map an app-server rate-limit snapshot to contract windows. `primary` is
+ * the 5-hour window and `secondary` the weekly window; when the snapshot
+ * carries `windowDurationMins` that duration decides the kind instead of
+ * the position. Returns undefined when nothing is renderable.
+ */
+export function mapCodexRateLimitWindows(
+  response: CodexSchema.V2GetAccountRateLimitsResponse | undefined,
+): ReadonlyArray<ServerProviderRateLimitWindow> | undefined {
+  const snapshot = response?.rateLimits;
+  if (!snapshot) return undefined;
+
+  const windows: ServerProviderRateLimitWindow[] = [];
+  const pushWindow = (
+    window: { resetsAt?: number | null; usedPercent: number; windowDurationMins?: number | null },
+    fallbackKind: string,
+  ) => {
+    if (!Number.isFinite(window.usedPercent)) return;
+    const kind =
+      window.windowDurationMins == null
+        ? fallbackKind
+        : window.windowDurationMins <= 720
+          ? "fiveHour"
+          : "weekly";
+    // The schema types resetsAt as an epoch int without pinning the unit;
+    // values this large can only be milliseconds.
+    const resetsAtMs =
+      typeof window.resetsAt === "number" && Number.isFinite(window.resetsAt) && window.resetsAt > 0
+        ? window.resetsAt >= 1e12
+          ? window.resetsAt
+          : window.resetsAt * 1000
+        : undefined;
+    windows.push({
+      kind,
+      utilization: Math.max(0, Math.min(100, window.usedPercent)),
+      ...(resetsAtMs === undefined
+        ? {}
+        : { resetsAt: DateTime.formatIso(DateTime.makeUnsafe(resetsAtMs)) }),
+    });
+  };
+  if (snapshot.primary) pushWindow(snapshot.primary, "fiveHour");
+  if (snapshot.secondary) pushWindow(snapshot.secondary, "weekly");
+  return windows.length > 0 ? windows : undefined;
 }
 
 const REASONING_EFFORT_LABELS: Readonly<Record<string, string>> = {
@@ -389,15 +437,24 @@ const probeCodexAppServerProvider = Effect.fn("probeCodexAppServerProvider")(fun
     } satisfies CodexAppServerProviderSnapshot;
   }
 
-  const [skillsResponse, models] = yield* Effect.all(
+  const [skillsResponse, models, rateLimitsResponse] = yield* Effect.all(
     [
       client.request("skills/list", {
         cwds: [input.cwd],
       }),
       requestAllCodexModels(client),
+      // Plan windows only exist for ChatGPT subscription auth; API key and
+      // Bedrock accounts have none. The read is best-effort — a failure
+      // degrades to "no usage shown", never a failed probe.
+      accountResponse.account?.type === "chatgpt"
+        ? client
+            .request("account/rateLimits/read", undefined)
+            .pipe(Effect.orElseSucceed(() => undefined))
+        : Effect.succeed<CodexSchema.V2GetAccountRateLimitsResponse | undefined>(undefined),
     ],
     { concurrency: "unbounded" },
   );
+  const rateLimits = mapCodexRateLimitWindows(rateLimitsResponse);
 
   return {
     account: accountResponse,
@@ -406,6 +463,7 @@ const probeCodexAppServerProvider = Effect.fn("probeCodexAppServerProvider")(fun
       appendCustomCodexModels(models, input.customModels ?? []),
     ),
     skills: parseCodexSkillsListResponse(skillsResponse, input.cwd),
+    ...(rateLimits ? { rateLimits } : {}),
   } satisfies CodexAppServerProviderSnapshot;
 });
 
@@ -608,6 +666,7 @@ export const checkCodexProviderStatus = Effect.fn("checkCodexProviderStatus")(fu
       status: accountStatus.status,
       auth: accountStatus.auth,
       ...(accountStatus.message ? { message: accountStatus.message } : {}),
+      ...(snapshot.rateLimits ? { rateLimits: snapshot.rateLimits } : {}),
     },
   });
 });

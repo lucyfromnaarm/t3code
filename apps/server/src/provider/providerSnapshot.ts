@@ -3,6 +3,7 @@ import type {
   ModelCapabilities,
   ServerProvider,
   ServerProviderAuth,
+  ServerProviderRateLimitWindow,
   ServerProviderSkill,
   ServerProviderSlashCommand,
   ServerProviderModel,
@@ -50,6 +51,7 @@ export interface ProviderProbeResult {
   readonly status: Exclude<ServerProviderState, "disabled">;
   readonly auth: ServerProviderAuth;
   readonly message?: string;
+  readonly rateLimits?: ReadonlyArray<ServerProviderRateLimitWindow>;
 }
 
 export interface ServerProviderPresentation {
@@ -250,6 +252,9 @@ export function buildServerProvider(input: {
     slashCommands: [...(input.slashCommands ?? [])],
     skills: [...(input.skills ?? [])],
     ...(versionAdvisory ? { versionAdvisory } : {}),
+    ...(input.probe.rateLimits && input.probe.rateLimits.length > 0
+      ? { rateLimits: input.probe.rateLimits }
+      : {}),
   };
 }
 

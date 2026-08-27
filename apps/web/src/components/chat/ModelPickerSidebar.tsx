@@ -1,9 +1,10 @@
-import { type ProviderInstanceId } from "@t3tools/contracts";
+import { type ProviderInstanceId, type ServerProviderRateLimitWindow } from "@t3tools/contracts";
 import { memo, useLayoutEffect, useRef, useState } from "react";
 import { SparklesIcon, StarIcon } from "lucide-react";
 import { ProviderInstanceIcon } from "./ProviderInstanceIcon";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import { cn } from "~/lib/utils";
+import { resolveRateLimitDisplay } from "~/lib/providerRateLimits";
 import {
   isProviderInstancePickerReady,
   shouldShowInstanceBadge,
@@ -27,6 +28,49 @@ function describeUnavailableInstance(entry: ProviderInstanceEntry): string {
     entry.status === "error" ? "Unavailable" : entry.status === "warning" ? "Limited" : "Not ready";
   const msg = entry.snapshot.message?.trim();
   return msg ? `${label} — ${kind}. ${msg}` : `${label} — ${kind}.`;
+}
+
+/**
+ * Plan usage meters below the account name in the rail tooltip: one static
+ * bar per window (5h, weekly, model weekly), plus reset lines per
+ * `resolveRateLimitDisplay`. Accounts without plan windows never reach this
+ * component, so their tooltip stays the plain name.
+ */
+function InstanceRateLimits(props: { windows: ReadonlyArray<ServerProviderRateLimitWindow> }) {
+  const { rows, resetLines } = resolveRateLimitDisplay(props.windows, new Date());
+  if (rows.length === 0) return null;
+  return (
+    <div className="mt-1.5 flex min-w-36 flex-col gap-1.5">
+      {rows.map((row) => (
+        <div key={row.label}>
+          <div className="mb-0.5 flex items-center justify-between gap-4 text-[11px] leading-4 text-muted-foreground">
+            <span>{row.label}</span>
+            <span className="tabular-nums">{row.utilization}%</span>
+          </div>
+          <div className="h-0.75 overflow-hidden rounded-full bg-foreground/10">
+            <div
+              className={cn(
+                "h-full rounded-full",
+                row.level === "danger"
+                  ? "bg-destructive"
+                  : row.level === "warning"
+                    ? "bg-warning"
+                    : "bg-muted-foreground",
+              )}
+              style={{ width: `${row.utilization}%` }}
+            />
+          </div>
+        </div>
+      ))}
+      {resetLines.length > 0 ? (
+        <div className="flex flex-col gap-0.5 text-[10px] text-muted-foreground/70">
+          {resetLines.map((line) => (
+            <span key={line}>{line}</span>
+          ))}
+        </div>
+      ) : null}
+    </div>
+  );
 }
 
 const SELECTED_INDICATOR_CLASS =
@@ -148,6 +192,8 @@ export const ModelPickerSidebar = memo(function ModelPickerSidebar(props: {
                 : showNewBadge
                   ? `${entry.displayName} — New`
                   : entry.displayName;
+            const rateLimits =
+              !isUnavailable && !isContextDisabled ? entry.snapshot.rateLimits : undefined;
 
             const button = (
               <button
@@ -221,7 +267,14 @@ export const ModelPickerSidebar = memo(function ModelPickerSidebar(props: {
                     align="center"
                     className={PICKER_TOOLTIP_CLASS}
                   >
-                    {tooltip}
+                    {rateLimits && rateLimits.length > 0 ? (
+                      <div>
+                        <div className="font-medium">{tooltip}</div>
+                        <InstanceRateLimits windows={rateLimits} />
+                      </div>
+                    ) : (
+                      tooltip
+                    )}
                   </TooltipPopup>
                 </Tooltip>
               </div>

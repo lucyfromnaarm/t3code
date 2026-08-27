@@ -158,6 +158,22 @@ export const ServerProviderUpdateState = Schema.Struct({
 });
 export type ServerProviderUpdateState = typeof ServerProviderUpdateState.Type;
 
+/**
+ * One rolling plan-limit window reported by a provider account probe
+ * (Claude subscription 5h/weekly windows, Codex primary/secondary windows).
+ * `kind` is an open slug — `"fiveHour"` and `"weekly"` today — so windows a
+ * client does not recognize are skipped rather than failing the decode.
+ * Model-scoped weekly windows (e.g. Opus) carry their model name in `label`.
+ */
+export const ServerProviderRateLimitWindow = Schema.Struct({
+  kind: TrimmedNonEmptyString,
+  label: Schema.optional(TrimmedNonEmptyString),
+  /** Percentage of the window used, clamped to 0-100. */
+  utilization: Schema.Number,
+  resetsAt: Schema.optional(IsoDateTime),
+});
+export type ServerProviderRateLimitWindow = typeof ServerProviderRateLimitWindow.Type;
+
 export const ServerProvider = Schema.Struct({
   // Routing key for the configured instance this snapshot represents. This
   // is the only stable identity consumers may use for provider routing.
@@ -194,6 +210,10 @@ export const ServerProvider = Schema.Struct({
   skills: Schema.Array(ServerProviderSkill).pipe(Schema.withDecodingDefault(Effect.succeed([]))),
   versionAdvisory: Schema.optionalKey(ServerProviderVersionAdvisory),
   updateState: Schema.optionalKey(ServerProviderUpdateState),
+  // Plan rate-limit windows captured by the account probe. Absent when the
+  // account has no plan limits (API key, proxy, Bedrock) or the probe could
+  // not read them.
+  rateLimits: Schema.optional(Schema.Array(ServerProviderRateLimitWindow)),
 });
 export type ServerProvider = typeof ServerProvider.Type;
 
