@@ -15,11 +15,10 @@ export interface RateLimitRow {
 }
 
 /**
- * Presentation model for the picker tooltip's usage block: one meter row per
- * plan window, plus a reset line for the 5h and weekly windows when an
- * upcoming reset is known. Model-scoped windows (server-labeled) reset with
- * the weekly window, so they get no line of their own. Windows the client
- * does not recognize are skipped so new server kinds degrade gracefully.
+ * Tooltip usage block: one meter row per plan window, plus reset lines for
+ * the 5h and weekly windows. Server-labeled (model-scoped) windows reset
+ * with the weekly window, so no line of their own. Unrecognized kinds are
+ * skipped so new server kinds degrade gracefully.
  */
 export function resolveRateLimitDisplay(
   windows: ReadonlyArray<ServerProviderRateLimitWindow>,
@@ -35,9 +34,8 @@ export function resolveRateLimitDisplay(
       (window.kind === "fiveHour" ? "5h" : window.kind === "weekly" ? "Weekly" : undefined);
     // Labels key the rendered rows, so a duplicate keeps its first window only.
     if (label === undefined || seenLabels.has(label)) continue;
-    // A window whose reset already passed has rolled over since the probe
-    // (sleep, lost demand lease); its utilization is stale, so drop the row
-    // rather than show a full meter for an empty window.
+    // A reset in the past means the window rolled over since the probe, so
+    // its utilization is stale; drop the row.
     if (window.resetsAt !== undefined) {
       const resetMs = Date.parse(window.resetsAt);
       if (!Number.isNaN(resetMs) && resetMs <= now.getTime()) continue;
@@ -65,12 +63,9 @@ export function resolveRateLimitDisplay(
 }
 
 /**
- * Reset timestamp as a bare time on the same calendar day, weekday + time
- * within the next six days, and date + time beyond that — a weekly window
- * resetting a full week out would otherwise print today's weekday and read
- * as hours away. Times follow the user's timestamp format setting.
- * Unparseable timestamps yield undefined; past ones never reach here
- * (their rows are dropped above).
+ * Same day: bare time. Within six days: weekday + time. Further out: date +
+ * time, so a reset a full week away cannot read as today. Times follow the
+ * user's timestamp format setting; unparseable timestamps yield undefined.
  */
 function formatRateLimitReset(
   resetsAt: string,

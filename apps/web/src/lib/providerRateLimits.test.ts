@@ -6,23 +6,25 @@ import { resolveRateLimitDisplay } from "./providerRateLimits";
 const NOW = new Date(2026, 7, 27, 10, 0, 0);
 
 const sameDayReset = new Date(2026, 7, 27, 18, 0, 0).toISOString();
-const nextWeekReset = new Date(2026, 8, 1, 9, 0, 0).toISOString();
+
+const formatTime = (date: Date) =>
+  date.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" });
 
 describe("resolveRateLimitDisplay", () => {
-  it("labels known windows and rounds utilization", () => {
+  it("labels known windows, rounds utilization, and levels at 80/95", () => {
     const { rows } = resolveRateLimitDisplay(
       [
         { kind: "fiveHour", utilization: 42.4 },
-        { kind: "weekly", utilization: 67 },
-        { kind: "weekly", label: "Fable", utilization: 11.9 },
+        { kind: "weekly", utilization: 80 },
+        { kind: "weekly", label: "Fable", utilization: 95 },
       ],
       NOW,
       "locale",
     );
     expect(rows).toEqual([
       { label: "5h", utilization: 42, level: "normal" },
-      { label: "Weekly", utilization: 67, level: "normal" },
-      { label: "Fable", utilization: 12, level: "normal" },
+      { label: "Weekly", utilization: 80, level: "warning" },
+      { label: "Fable", utilization: 95, level: "danger" },
     ]);
   });
 
@@ -38,45 +40,16 @@ describe("resolveRateLimitDisplay", () => {
     expect(rows.map((row) => row.label)).toEqual(["Extra"]);
   });
 
-  it("marks warning at 80 and danger at 95", () => {
-    const { rows } = resolveRateLimitDisplay(
-      [
-        { kind: "fiveHour", utilization: 79.4 },
-        { kind: "weekly", utilization: 80 },
-        { kind: "weekly", label: "Opus", utilization: 95 },
-      ],
-      NOW,
-      "locale",
-    );
-    expect(rows.map((row) => row.level)).toEqual(["normal", "warning", "danger"]);
-  });
-
-  it("shows 5h and weekly reset lines but none for model-scoped windows", () => {
-    const { resetLines } = resolveRateLimitDisplay(
-      [
-        { kind: "fiveHour", utilization: 12, resetsAt: sameDayReset },
-        { kind: "weekly", utilization: 40, resetsAt: nextWeekReset },
-        { kind: "weekly", label: "Fable", utilization: 12, resetsAt: nextWeekReset },
-      ],
-      NOW,
-      "locale",
-    );
-    expect(resetLines).toHaveLength(2);
-    expect(resetLines[0]).toMatch(/^5h resets /);
-    expect(resetLines[1]).toMatch(/^Weekly resets /);
-  });
-
-  it("formats resets as time, weekday + time, or date + time by distance", () => {
+  it("shows 5h and weekly reset lines, none for model-scoped windows", () => {
     const nextDayReset = new Date(2026, 7, 28, 9, 0, 0);
-    // A weekly window resetting a full week out would print today's weekday
-    // and read as hours away, so far resets switch to a date.
+    // A reset a full week out would print today's weekday and read as hours
+    // away, so far resets switch to a date.
     const fullWeekReset = new Date(2026, 8, 3, 9, 0, 0);
-    const formatTime = (date: Date) =>
-      date.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" });
     const near = resolveRateLimitDisplay(
       [
         { kind: "fiveHour", utilization: 12, resetsAt: sameDayReset },
-        { kind: "weekly", utilization: 99, resetsAt: nextDayReset.toISOString() },
+        { kind: "weekly", utilization: 40, resetsAt: nextDayReset.toISOString() },
+        { kind: "weekly", label: "Fable", utilization: 90, resetsAt: nextDayReset.toISOString() },
       ],
       NOW,
       "locale",
