@@ -16,9 +16,10 @@ export interface RateLimitRow {
 
 /**
  * Presentation model for the picker tooltip's usage block: one meter row per
- * plan window, plus a reset line for each window with a known upcoming reset.
- * Windows the client does not recognize are skipped so new server kinds
- * degrade gracefully.
+ * plan window, plus a reset line for the 5h and weekly windows when an
+ * upcoming reset is known. Model-scoped windows (server-labeled) reset with
+ * the weekly window, so they get no line of their own. Windows the client
+ * does not recognize are skipped so new server kinds degrade gracefully.
  */
 export function resolveRateLimitDisplay(
   windows: ReadonlyArray<ServerProviderRateLimitWindow>,
@@ -53,7 +54,7 @@ export function resolveRateLimitDisplay(
             ? "warning"
             : "normal",
     });
-    if (window.resetsAt !== undefined) {
+    if (window.label === undefined && window.resetsAt !== undefined) {
       const formatted = formatRateLimitReset(window.resetsAt, now, timestampFormat);
       if (formatted !== undefined) {
         resetLines.push(`${label} resets ${formatted}`);

@@ -51,11 +51,11 @@ describe("resolveRateLimitDisplay", () => {
     expect(rows.map((row) => row.level)).toEqual(["normal", "warning", "danger"]);
   });
 
-  it("shows a reset line for every window with a known reset", () => {
+  it("shows 5h and weekly reset lines but none for model-scoped windows", () => {
     const { resetLines } = resolveRateLimitDisplay(
       [
         { kind: "fiveHour", utilization: 12, resetsAt: sameDayReset },
-        { kind: "weekly", utilization: 40 },
+        { kind: "weekly", utilization: 40, resetsAt: nextWeekReset },
         { kind: "weekly", label: "Fable", utilization: 12, resetsAt: nextWeekReset },
       ],
       NOW,
@@ -63,7 +63,7 @@ describe("resolveRateLimitDisplay", () => {
     );
     expect(resetLines).toHaveLength(2);
     expect(resetLines[0]).toMatch(/^5h resets /);
-    expect(resetLines[1]).toMatch(/^Fable resets /);
+    expect(resetLines[1]).toMatch(/^Weekly resets /);
   });
 
   it("formats resets as time, weekday + time, or date + time by distance", () => {
@@ -71,24 +71,28 @@ describe("resolveRateLimitDisplay", () => {
     // A weekly window resetting a full week out would print today's weekday
     // and read as hours away, so far resets switch to a date.
     const fullWeekReset = new Date(2026, 8, 3, 9, 0, 0);
-    const { resetLines } = resolveRateLimitDisplay(
+    const formatTime = (date: Date) =>
+      date.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" });
+    const near = resolveRateLimitDisplay(
       [
         { kind: "fiveHour", utilization: 12, resetsAt: sameDayReset },
         { kind: "weekly", utilization: 99, resetsAt: nextDayReset.toISOString() },
-        { kind: "weekly", label: "Fable", utilization: 99, resetsAt: fullWeekReset.toISOString() },
       ],
       NOW,
       "locale",
     );
-    const formatTime = (date: Date) =>
-      date.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" });
     const weekday = nextDayReset.toLocaleDateString(undefined, { weekday: "short" });
-    const farDate = fullWeekReset.toLocaleDateString(undefined, { month: "short", day: "numeric" });
-    expect(resetLines).toEqual([
+    expect(near.resetLines).toEqual([
       `5h resets ${formatTime(new Date(sameDayReset))}`,
       `Weekly resets ${weekday} ${formatTime(nextDayReset)}`,
-      `Fable resets ${farDate} ${formatTime(fullWeekReset)}`,
     ]);
+    const far = resolveRateLimitDisplay(
+      [{ kind: "weekly", utilization: 99, resetsAt: fullWeekReset.toISOString() }],
+      NOW,
+      "locale",
+    );
+    const farDate = fullWeekReset.toLocaleDateString(undefined, { month: "short", day: "numeric" });
+    expect(far.resetLines).toEqual([`Weekly resets ${farDate} ${formatTime(fullWeekReset)}`]);
   });
 
   it("drops rows whose window already reset and reset lines without a usable timestamp", () => {

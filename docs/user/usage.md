@@ -17,6 +17,6 @@ headline and chart, and refreshing rescans every connected environment.
 On web and desktop, hover an account in the model picker rail to see its plan windows under the
 account name: the 5-hour and weekly windows for Claude subscriptions (plus per-model weekly
 windows when Anthropic reports them) and the 5-hour and weekly windows for ChatGPT-backed Codex
-accounts. Each window's reset time is shown whenever an upcoming reset is known. Accounts without
-plan limits, such as API keys or
+accounts. The 5-hour and weekly reset times are shown whenever an upcoming reset is known;
+per-model windows reset with the weekly window. Accounts without plan limits, such as API keys or
 claude-compatible gateways, show the account name only.
