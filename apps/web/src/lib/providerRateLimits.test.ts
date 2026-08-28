@@ -51,12 +51,12 @@ describe("resolveRateLimitDisplay", () => {
     expect(rows.map((row) => row.level)).toEqual(["normal", "warning", "danger"]);
   });
 
-  it("always shows the 5h reset and holds weekly resets until 90%", () => {
+  it("shows a reset line for every window with a known reset", () => {
     const { resetLines } = resolveRateLimitDisplay(
       [
         { kind: "fiveHour", utilization: 12, resetsAt: sameDayReset },
-        { kind: "weekly", utilization: 89, resetsAt: nextWeekReset },
-        { kind: "weekly", label: "Fable", utilization: 90, resetsAt: nextWeekReset },
+        { kind: "weekly", utilization: 40 },
+        { kind: "weekly", label: "Fable", utilization: 12, resetsAt: nextWeekReset },
       ],
       NOW,
       "locale",
